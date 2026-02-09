@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import secrets
 from fastapi import HTTPException
 from sqlmodel import select
@@ -40,6 +40,19 @@ def crear_invitacion_docente(
         raise HTTPException(status_code=403, detail="Solo Director Activo puede generar invitaciones")
 
     # 3) validar fechas
+    tipo = (tipo or "").strip().capitalize()
+    hoy = date.today()
+
+    if fechaDesde is None:
+        fechaDesde = hoy
+
+    if tipo == "Titular":
+        fechaHasta = None
+    else:
+        # Suplente: default 30 días desde fechaDesde
+        if fechaHasta is None:
+            fechaHasta = fechaDesde + timedelta(days=30)
+
     if fechaDesde and fechaHasta and fechaHasta < fechaDesde:
         raise HTTPException(status_code=400, detail="fechaHasta no puede ser menor a fechaDesde")
 
