@@ -43,7 +43,7 @@ class EscuelaUpdate(SQLModel):
     codigo_provincial: str | None= None
     telefono: str | None= None
     correo_electronico: str | None= None
-    provincia_id: str = Field(max_length=10)
-    localidad_id: str = Field(max_length=20)
+    provincia_id: str | None = None
+    localidad_id: str | None = None
 
 
