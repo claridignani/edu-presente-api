@@ -1,65 +1,123 @@
 from __future__ import annotations
 
 from typing import Annotated
+from datetime import date, datetime
 
 from fastapi import HTTPException, Query
 from sqlmodel import select
 
 from app.core.security import get_password_hash
 from app.dependencies import SessionDep
-from app.models.rol import Rol
+
 from app.models.usuario import Usuario
-from app.schemas.rol import RolDescripcion, RolEstado
+from app.models.rol import Rol
+from app.models.curso_docente import CursoDocente
+
 from app.schemas.usuario import UsuarioCreate, UsuarioUpdate
+from app.schemas.rol import RolDescripcion, RolEstado
+
+import app.services.invitacion_docente_service as inv_service
 
 
 def get_all_usuarios(db: SessionDep, offset: int, limit: Annotated[int, Query(le=100)]):
-    usuarios = db.exec(select(Usuario).offset(offset).limit(limit)).all()
-    return usuarios
+    return db.exec(select(Usuario).offset(offset).limit(limit)).all()
 
 
 def get_usuario_by_dni(db: SessionDep, dni: str):
-    statement = select(Usuario).where(Usuario.dni == dni)
-    return db.exec(statement).first()
+    return db.exec(select(Usuario).where(Usuario.dni == dni)).first()
 
 
 def get_usuario_by_mail(db: SessionDep, mail: str):
-    statement = select(Usuario).where(Usuario.mailABC == mail)
-    return db.exec(statement).first()
+    return db.exec(select(Usuario).where(Usuario.mailABC == mail)).first()
 
 
 def get_one_usuario(idUsuario: int, db: SessionDep):
     return db.get(Usuario, idUsuario)
 
 
+# CREATE
 def add_usuario(usuario: UsuarioCreate, db: SessionDep):
-    # ✅ Validar DNI único
-    if get_usuario_by_dni(db, usuario.dni):
-        raise HTTPException(status_code=400, detail="Ya existe un usuario con este DNI")
+    # --------------------------------------------------
+    # 1) Validaciones de unicidad
+    # --------------------------------------------------
+    dni_existente = get_usuario_by_dni(db, usuario.dni)
+    mail_existente = get_usuario_by_mail(db, usuario.mailABC)
 
-    # ✅ Validar email único
-    if get_usuario_by_mail(db, usuario.mailABC):
-        raise HTTPException(status_code=400, detail="Ya existe un usuario con este email")
+    # --------------------------------------------------
+    # 2) Registro con código de invitación
+    #    (solo para usuarios nuevos)
+    # --------------------------------------------------
+    invitacion = None
 
-    # Crear usuario (sin escuelas/rol porque van por tabla Rol)
-    usuario_validado = usuario.model_dump(exclude={"escuelasCUE", "rol"})
-    db_usuario = Usuario.model_validate(usuario_validado)
+    if usuario.codigoInvitacion:
+        # ✅ Si ya existe el usuario, NO puede registrarse de nuevo con código.
+        if dni_existente or mail_existente:
+            raise HTTPException(
+                status_code=409,
+                detail="Este código es para docentes nuevos. Si ya tenés cuenta, iniciá sesión y cargalo desde tu panel docente.",
+            )
 
-    # Guardar contraseña hasheada
+        invitacion = inv_service.get_invitacion_por_codigo(db, usuario.codigoInvitacion)
+
+        if invitacion.usada:
+            raise HTTPException(status_code=409, detail="El código de invitación ya fue utilizado")
+
+        # Forzar rol y escuela desde la invitación
+        rol_final = RolDescripcion.Docente
+        escuelas_finales = [invitacion.CUE]
+    else:
+        # ✅ Registro normal: acá sí aplican las validaciones de unicidad
+        if dni_existente:
+            raise HTTPException(status_code=400, detail="Ya existe un usuario con este DNI")
+
+        if mail_existente:
+            raise HTTPException(status_code=400, detail="Ya existe un usuario con este email")
+
+        rol_final = usuario.rol
+        escuelas_finales = usuario.escuelasCUE
+
+    # --------------------------------------------------
+    # 3) Crear usuario
+    # --------------------------------------------------
+    usuario_data = usuario.model_dump(exclude={"escuelasCUE", "rol", "codigoInvitacion"})
+    db_usuario = Usuario.model_validate(usuario_data)
     db_usuario.contrasena = get_password_hash(usuario.contrasena)
 
     db.add(db_usuario)
-    db.flush()  # para obtener idUsuario
+    db.flush()  # obtiene idUsuario
 
-    # Crear roles por escuela (por defecto RolBase trae estado=Pendiente)
-    for cue in usuario.escuelasCUE:
+    # --------------------------------------------------
+    # 4) Crear roles (estado default = Pendiente)
+    # --------------------------------------------------
+    for cue in escuelas_finales:
         nuevo_rol = Rol(
-            descripcion=usuario.rol,
+            descripcion=rol_final,
             idUsuario=db_usuario.idUsuario,
             CUE=cue,
-            # estado queda por default en Pendiente (RolBase)
+            estado=RolEstado.Pendiente,
         )
-        db.add(Rol.model_validate(nuevo_rol))
+        db.add(nuevo_rol)
+
+    # --------------------------------------------------
+    # 5) Si vino por invitación → asignar al curso y marcar usada
+    # --------------------------------------------------
+    if invitacion:
+        existente = db.get(CursoDocente, (invitacion.idCurso, db_usuario.idUsuario))
+        if existente:
+            raise HTTPException(status_code=409, detail="El usuario ya está asignado a este curso")
+
+        curso_docente = CursoDocente(
+            idCurso=invitacion.idCurso,
+            idUsuario=db_usuario.idUsuario,
+            tipo=invitacion.tipo,
+            fechaDesde=invitacion.fechaDesde,  
+            fechaHasta=invitacion.fechaHasta,
+        )
+        db.add(curso_docente)
+
+        invitacion.usada = True
+        invitacion.fechaUso = datetime.utcnow()
+        db.add(invitacion)
 
     db.commit()
     db.refresh(db_usuario)
@@ -69,11 +127,9 @@ def add_usuario(usuario: UsuarioCreate, db: SessionDep):
 def change_usuario(usuario_nuevo: UsuarioUpdate, usuario_existente: Usuario, db: SessionDep):
     usuario_data = usuario_nuevo.model_dump(exclude_unset=True)
 
-    # Si actualiza contraseña, se hashea
     if usuario_nuevo.contrasena:
         usuario_data["contrasena"] = get_password_hash(usuario_nuevo.contrasena)
 
-    # Si actualiza DNI o mail, validar duplicados (sin contar al mismo usuario)
     if "dni" in usuario_data and usuario_data["dni"]:
         otro = get_usuario_by_dni(db, usuario_data["dni"])
         if otro and otro.idUsuario != usuario_existente.idUsuario:
@@ -89,7 +145,6 @@ def change_usuario(usuario_nuevo: UsuarioUpdate, usuario_existente: Usuario, db:
     db.commit()
     db.refresh(usuario_existente)
     return usuario_existente
-
 
 
 def delete_one_usuario(usuario: Usuario, db: SessionDep):

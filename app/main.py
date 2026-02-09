@@ -11,6 +11,8 @@ from app.routers import asistencia
 from app.routers import inscriptos
 from app.routers import responsable
 from app.routers import parentesco
+from app.routers import invitacion_docente
+
 app = FastAPI()
 
 origins = [
@@ -34,4 +36,5 @@ app.include_router(asistencia.router)
 app.include_router(inscriptos.router)
 app.include_router(responsable.router)
 app.include_router(parentesco.router)
+app.include_router(invitacion_docente.router)
 

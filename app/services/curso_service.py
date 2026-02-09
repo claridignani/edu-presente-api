@@ -1,6 +1,8 @@
 from typing import Annotated
 from sqlmodel import Session, and_, select
 from fastapi import HTTPException
+from sqlalchemy import or_
+from datetime import date
 import logging
 from fastapi import Query
 from app.core.security import get_password_hash
@@ -57,12 +59,14 @@ def change_curso(curso_nuevo: CursoUpdate, curso_existente: Curso, db: SessionDe
     return curso_existente
 
 def get_cursos_by_usuario(db: SessionDep, idUsuario: int):
+    hoy = date.today()
     statement = (
         select(Curso, Escuela)
         .select_from(CursoDocente)
         .join(Curso, CursoDocente.idCurso == Curso.idCurso)
         .join(Escuela, Escuela.CUE == Curso.CUE)
-        .where(CursoDocente.idUsuario == idUsuario)
+        .where(CursoDocente.idUsuario == idUsuario, or_(CursoDocente.fechaDesde == None, CursoDocente.fechaDesde <= hoy),
+            or_(CursoDocente.fechaHasta == None, CursoDocente.fechaHasta >= hoy),)
     )
     return db.exec(statement).all()
 

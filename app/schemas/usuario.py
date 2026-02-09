@@ -1,4 +1,5 @@
 from datetime import date
+from typing import Optional
 from sqlmodel import SQLModel, Field
 from app.schemas.rol import RolDescripcion, RolPublic
 
@@ -17,7 +18,8 @@ class UsuarioPublic(UsuarioBase):
 class UsuarioCreate(UsuarioBase):
     contrasena: str
     rol: RolDescripcion
-    escuelasCUE: list[str]
+    escuelasCUE: list[str] 
+    codigoInvitacion: Optional[str] = None
 
 class UsuarioUpdate(SQLModel):
     nombre: str | None = None          

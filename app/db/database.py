@@ -13,4 +13,7 @@ def create_db_and_tables():
         import app.models.asistencia
         import app.models.responsable
         import app.models.parentesco
+        import app.models.curso_docente
+        import app.models.invitacion_docente
+
         SQLModel.metadata.create_all(engine)
