@@ -1,12 +1,14 @@
-from typing import Annotated
-from datetime import date
+from __future__ import annotations
+
+import re
+from typing import Annotated, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from app.dependencies import SessionDep
 from app.schemas.usuario import UsuarioCreate, UsuarioPublic, UsuarioUpdate
-from app.schemas.rol import RolDescripcion
+from app.schemas.rol import RolDescripcion, RolPublic
 from app.core.security import verify_password, get_password_hash
 
 from app.services.usuario_service import (
@@ -17,96 +19,207 @@ from app.services.usuario_service import (
     get_one_usuario,
     get_usuario_by_dni,
     get_usuarios_by_escuela,
+    # ✅ nuevos (de tu service corregido)
+    get_all_usuarios_admin,
+    get_usuario_admin_by_id,
 )
 
 router = APIRouter(prefix="/usuarios", tags=["Usuarios"])
 
+# Helpers / Regex
+CUE_RE = re.compile(r"^[034]\d{4}[A-Z]{2}\d{3,4}$")
 
-# LISTAR USUARIOS
 
+def _validate_cue_or_422(cue: str) -> str:
+    cue_norm = str(cue).strip().upper().replace(" ", "")
+    cue_norm = re.sub(r"[^0-9A-Z]", "", cue_norm)
+    if not CUE_RE.match(cue_norm):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "CUE inválido. Formato esperado: Gestión(0/3/4) + Distrito(4 dígitos) + "
+                "Nivel(2 letras) + Escuela(3 o 4 dígitos). Ej: 00098PP007"
+            ),
+        )
+    return cue_norm
+
+
+# Reglas de contraseña (igual que en schema)
+def _validate_password_or_422(pw: str) -> str:
+    if not isinstance(pw, str) or not pw.strip():
+        raise HTTPException(status_code=422, detail="La contraseña es obligatoria")
+
+    pw = pw.strip()
+    if len(pw) < 8:
+        raise HTTPException(status_code=422, detail="La contraseña debe tener al menos 8 caracteres")
+    if not re.search(r"[A-Z]", pw):
+        raise HTTPException(status_code=422, detail="La contraseña debe tener al menos 1 letra mayúscula")
+    if not re.search(r"[a-z]", pw):
+        raise HTTPException(status_code=422, detail="La contraseña debe tener al menos 1 letra minúscula")
+    if not re.search(r"\d", pw):
+        raise HTTPException(status_code=422, detail="La contraseña debe tener al menos 1 número")
+    if not re.search(r"[^\w\s]", pw):
+        raise HTTPException(status_code=422, detail="La contraseña debe tener al menos 1 caracter especial")
+
+    return pw
+
+
+# =========================
+# RESPUESTA ADMIN (usuario + roles + escuela)
+# =========================
+class UsuarioRolEscuelaOut(BaseModel):
+    CUE: str
+    nombre_escuela: Optional[str] = None
+    rol: RolPublic
+
+
+class UsuarioAdminOut(UsuarioPublic):
+    roles: List[UsuarioRolEscuelaOut] = []
+
+
+def _map_admin_rows(rows) -> list[UsuarioAdminOut]:
+    """
+    rows: list[tuple[Usuario, Rol|None, Escuela|None]]
+    Agrupa por usuario y arma roles[].
+    """
+    agrupados: dict[int, UsuarioAdminOut] = {}
+
+    for usuario, rol, escuela in rows:
+        if usuario.idUsuario not in agrupados:
+            base = UsuarioPublic.model_validate(usuario)
+            agrupados[usuario.idUsuario] = UsuarioAdminOut(**base.model_dump(), roles=[])
+
+        # Puede venir sin rol (outerjoin)
+        if rol is None:
+            continue
+
+        rol_public = RolPublic.model_validate(rol)
+
+        agrupados[usuario.idUsuario].roles.append(
+            UsuarioRolEscuelaOut(
+                CUE=rol.CUE,
+                nombre_escuela=getattr(escuela, "nombre", None) if escuela is not None else None,
+                rol=rol_public,
+            )
+        )
+
+    return list(agrupados.values())
+
+
+# =========================
+# LISTAR USUARIOS (BÁSICO)
+# =========================
 @router.get("/", response_model=list[UsuarioPublic])
 def get_all(
     session: SessionDep,
     offset: int = 0,
-    limit: Annotated[int, Query(le=100)] = 100
+    limit: Annotated[int, Query(le=100)] = 100,
 ):
     return get_all_usuarios(session, offset, limit)
 
 
+# ✅ ALIAS para que NO rompa si el front llama /usuarios/usuarios
+# (tiene que ir ANTES de /{usuario_id})
+@router.get("/usuarios", response_model=list[UsuarioPublic])
+def get_all_alias(
+    session: SessionDep,
+    offset: int = 0,
+    limit: Annotated[int, Query(le=100)] = 100,
+):
+    return get_all_usuarios(session, offset, limit)
 
+
+# =========================
+# LISTAR USUARIOS (ADMIN: con roles + escuela)
+# =========================
+@router.get("/admin", response_model=list[UsuarioAdminOut])
+def get_all_admin(
+    session: SessionDep,
+    offset: int = 0,
+    limit: Annotated[int, Query(le=200)] = 200,
+):
+    rows = get_all_usuarios_admin(session, offset=offset, limit=limit)
+    return _map_admin_rows(rows)
+
+
+# Alias opcional por si el front termina pegándole acá
+@router.get("/admin/usuarios", response_model=list[UsuarioAdminOut])
+def get_all_admin_alias(
+    session: SessionDep,
+    offset: int = 0,
+    limit: Annotated[int, Query(le=200)] = 200,
+):
+    rows = get_all_usuarios_admin(session, offset=offset, limit=limit)
+    return _map_admin_rows(rows)
+
+
+@router.get("/{usuario_id}/admin", response_model=UsuarioAdminOut)
+def read_admin(usuario_id: int, session: SessionDep):
+    rows = get_usuario_admin_by_id(session, usuario_id)
+    if not rows:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    # rows puede tener varias filas por roles → lo mapeamos y devolvemos el 1ero
+    return _map_admin_rows(rows)[0]
+
+
+# =========================
 # CREAR USUARIO
-
+# =========================
 @router.post("/", response_model=UsuarioPublic, status_code=201)
 def create(usuario: UsuarioCreate, session: SessionDep):
     usuario_existente = get_usuario_by_dni(session, usuario.dni)
     if usuario_existente:
-        raise HTTPException(
-            status_code=400,
-            detail="Ya existe un usuario con este DNI"
-        )
+        raise HTTPException(status_code=400, detail="Ya existe un usuario con este DNI")
     return add_usuario(usuario, session)
 
 
-
-# OBTENER USUARIO POR ID
-
+# =========================
+# OBTENER USUARIO POR ID (BÁSICO)
+# =========================
 @router.get("/{usuario_id}", response_model=UsuarioPublic)
 def read(usuario_id: int, session: SessionDep):
     usuario = get_one_usuario(usuario_id, session)
     if not usuario:
-        raise HTTPException(
-            status_code=404,
-            detail="Usuario no encontrado"
-        )
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
     return usuario
 
 
-
+# =========================
 # ACTUALIZAR USUARIO (EDITAR PERFIL)
-
+# =========================
 @router.patch("/{usuario_id}", response_model=UsuarioPublic)
 def update(usuario_id: int, usuario: UsuarioUpdate, session: SessionDep):
     usuario_db = get_one_usuario(usuario_id, session)
     if not usuario_db:
-        raise HTTPException(
-            status_code=404,
-            detail="Usuario no encontrado"
-        )
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
     return change_usuario(usuario, usuario_db, session)
 
 
-
+# =========================
 # CAMBIAR CONTRASEÑA (SEGURO)
-
+# =========================
 class CambiarContrasenaIn(BaseModel):
     currentPassword: str
     newPassword: str
 
+    @field_validator("newPassword")
+    @classmethod
+    def validar_new_password(cls, v: str):
+        _validate_password_or_422(v)
+        return v
+
 
 @router.post("/{usuario_id}/cambiar-contrasena")
-def cambiar_contrasena(
-    usuario_id: int,
-    payload: CambiarContrasenaIn,
-    session: SessionDep
-):
+def cambiar_contrasena(usuario_id: int, payload: CambiarContrasenaIn, session: SessionDep):
     usuario_db = get_one_usuario(usuario_id, session)
     if not usuario_db:
-        raise HTTPException(
-            status_code=404,
-            detail="Usuario no encontrado"
-        )
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
-    # Validar contraseña actual
     if not verify_password(payload.currentPassword, usuario_db.contrasena):
-        raise HTTPException(
-            status_code=400,
-            detail="Contraseña actual incorrecta"
-        )
+        raise HTTPException(status_code=400, detail="Contraseña actual incorrecta")
 
-    # Guardar nueva contraseña (hasheada)
     usuario_db.contrasena = get_password_hash(payload.newPassword)
-
     session.add(usuario_db)
     session.commit()
     session.refresh(usuario_db)
@@ -114,40 +227,31 @@ def cambiar_contrasena(
     return {"ok": True}
 
 
-
+# =========================
 # ELIMINAR USUARIO
-
+# =========================
 @router.delete("/{usuario_id}", status_code=204)
 def delete(usuario_id: int, session: SessionDep):
     usuario_db = get_one_usuario(usuario_id, session)
     if not usuario_db:
-        raise HTTPException(
-            status_code=404,
-            detail="Usuario no encontrado"
-        )
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
     delete_one_usuario(usuario_db, session)
     return None
 
 
-
-#  USUARIOS POR ESCUELA
-
+# =========================
+# USUARIOS POR ESCUELA
+# =========================
 @router.get("/escuelas/{CUE}/docentes/", response_model=list[UsuarioPublic])
 def get_docentes_por_escuela(CUE: str, session: SessionDep):
+    cue = _validate_cue_or_422(CUE)
     rol = RolDescripcion.Docente
-    return get_usuarios_by_escuela(
-        tipo=rol,
-        CUE=CUE,
-        db=session
-    )
+    return get_usuarios_by_escuela(tipo=rol, CUE=cue, db=session)
 
 
 @router.get("/escuelas/{CUE}/asistentes/", response_model=list[UsuarioPublic])
 def get_asistentes_por_escuela(CUE: str, session: SessionDep):
+    cue = _validate_cue_or_422(CUE)
     rol = RolDescripcion.Asistente
-    return get_usuarios_by_escuela(
-        tipo=rol,
-        CUE=CUE,
-        db=session
-    )
+    return get_usuarios_by_escuela(tipo=rol, CUE=cue, db=session)

@@ -103,9 +103,6 @@ def read_stats_serie(
         solo_lluvia=solo_lluvia,
     )
 
-
-
-
 @router.get("/stats/distribucion")
 def read_stats_distribucion(
     session: SessionDep,
