@@ -1,92 +1,160 @@
+from __future__ import annotations
+
 from typing import Annotated
-from sqlmodel import Session, and_, select
-from fastapi import HTTPException
-from sqlalchemy import or_
 from datetime import date
 import logging
-from fastapi import Query
-from app.core.security import get_password_hash
-from app.models.curso import Curso
+
+from fastapi import HTTPException, Query
+from sqlalchemy import and_, or_
+from sqlmodel import select
+
 from app.dependencies import SessionDep
-from app.models.rol import Rol
+from app.models.curso import Curso
 from app.models.curso_docente import CursoDocente
 from app.models.escuela import Escuela
-from app.schemas.curso import CursoCreate, CursoUpdate
+from app.schemas.curso import CursoCreate, CursoUpdate, TurnoCurso
 from app.schemas.rol import RolDescripcion, RolEstado
 from app.services.rol_service import get_one_rol
 
-logger = logging.getLogger()
+logger = logging.getLogger(__name__)
 
-def get_all_cursos(db: SessionDep, offset: int, limit: Annotated[int, Query(le=100)]):
-    statement = select(Curso).offset(offset).limit(limit)
-    cursos = db.exec(statement).all()
-    return cursos
-    
+# =========================
+# Helpers
+# =========================
+
+def normalize_turno(turno) -> TurnoCurso:
+    if turno is None:
+        return TurnoCurso.Manana
+
+    if isinstance(turno, TurnoCurso):
+        return turno
+
+    t = str(turno).strip()
+
+    if t in ("Mañana", "Manana", "manana"):
+        return TurnoCurso.Manana
+    if t in ("Tarde", "tarde"):
+        return TurnoCurso.Tarde
+    if t in ("DobleTurno", "Doble turno", "doble turno", "Doble Turno"):
+        return TurnoCurso.DobleTurno
+
+    return TurnoCurso.Manana
+
+
+# =========================
+# CRUD Cursos
+# =========================
+
+def get_all_cursos(
+    db: SessionDep,
+    offset: int,
+    limit: Annotated[int, Query(le=100)] = 100,
+):
+    stmt = select(Curso).offset(offset).limit(limit)
+    return db.exec(stmt).all()
+
 
 def add_curso(db: SessionDep, curso: CursoCreate):
-    rol = get_one_rol(curso.idUsuario, curso.CUE, db)
-    logger.info(rol)
-    if not rol or rol.estado.value != "Activo":
-        return None
-    db_curso = Curso.model_validate(curso)
-    db_curso.password = get_password_hash(curso.password)
+    """
+    ✅ Compat: no lo uses para crear por escuela.
+    Lo dejamos para que NO rompan imports viejos, pero exige que el payload traiga CUE.
+    """
+    cue = getattr(curso, "CUE", None)
+    if not cue:
+        raise HTTPException(
+            status_code=400,
+            detail="Falta CUE. Usar POST /escuelas/escuelas/{cue}/cursos?usuario_id=ID_DIRECTOR",
+        )
+
+    db_curso = Curso(
+        nombre=curso.nombre,
+        cicloLectivo=curso.cicloLectivo,
+        division=curso.division,
+        turno=normalize_turno(curso.turno),
+        CUE=cue,
+    )
     db.add(db_curso)
     db.commit()
     db.refresh(db_curso)
     return db_curso
 
+
 def get_one_curso(idCurso: int, db: SessionDep):
-    db_curso = db.get(Curso, idCurso)
-    return db_curso
+    return db.get(Curso, idCurso)
+
 
 def delete_one_curso(idCurso: int, db: SessionDep):
-    db_curso = db.get(Curso, idCurso)
-    if not db_curso:
+    curso = db.get(Curso, idCurso)
+    if not curso:
         raise Exception("Curso no encontrado")
-    db.delete(db_curso)
+    db.delete(curso)
     db.commit()
 
-def change_curso(curso_nuevo: CursoUpdate, curso_existente: Curso, db: SessionDep):
-    # Extraemos solo los campos presentes en la solicitud JSON
-    curso_data = curso_nuevo.model_dump(exclude_unset=True)
-    if curso_nuevo.password:
-        curso_data["password"] = get_password_hash(curso_nuevo.password)
-    # Actualización atómica de SQLModel
-    curso_existente.sqlmodel_update(curso_data)
+
+def change_curso(
+    curso_nuevo: CursoUpdate,
+    curso_existente: Curso,
+    db: SessionDep,
+):
+    data = curso_nuevo.model_dump(exclude_unset=True)
+
+    if "turno" in data:
+        data["turno"] = normalize_turno(data["turno"])
+
+    curso_existente.sqlmodel_update(data)
     db.add(curso_existente)
     db.commit()
     db.refresh(curso_existente)
     return curso_existente
 
+
+# =========================
+# Queries
+# =========================
+
 def get_cursos_by_usuario(db: SessionDep, idUsuario: int):
     hoy = date.today()
-    statement = (
+
+    stmt = (
         select(Curso, Escuela)
         .select_from(CursoDocente)
         .join(Curso, CursoDocente.idCurso == Curso.idCurso)
         .join(Escuela, Escuela.CUE == Curso.CUE)
-        .where(CursoDocente.idUsuario == idUsuario, or_(CursoDocente.fechaDesde == None, CursoDocente.fechaDesde <= hoy),
-            or_(CursoDocente.fechaHasta == None, CursoDocente.fechaHasta >= hoy),)
+        .where(
+            CursoDocente.idUsuario == idUsuario,
+            or_(CursoDocente.fechaDesde == None, CursoDocente.fechaDesde <= hoy),
+            or_(CursoDocente.fechaHasta == None, CursoDocente.fechaHasta >= hoy),
+        )
     )
-    return db.exec(statement).all()
+
+    return db.exec(stmt).all()
 
 
-def get_cursos_by_cue(db, cue: str):
-    statement = (select(Curso).where(Curso.CUE == cue))
-    return db.exec(statement).all()
+def get_cursos_by_cue(db: SessionDep, cue: str):
+    stmt = select(Curso).where(Curso.CUE == cue)
+    return db.exec(stmt).all()
 
-def add_curso_director(db: SessionDep, cue: str, idUsuarioDirector: int, curso: CursoCreate):
-    # 1️⃣ validar que sea director activo
+
+# =========================
+# Crear curso (Director)
+# =========================
+
+def add_curso_director(
+    db: SessionDep,
+    cue: str,
+    idUsuarioDirector: int,
+    curso: CursoCreate,
+):
     rol = get_one_rol(idUsuarioDirector, cue, db)
-
     if (
         not rol
         or rol.estado != RolEstado.Activo
         or rol.descripcion != RolDescripcion.Director
     ):
-        return None
+        raise HTTPException(status_code=403, detail="Solo un Director Activo puede crear cursos")
 
-    # 2️⃣ validar curso único (CUE + ciclo + nombre + división + turno)
+    turno_enum = normalize_turno(curso.turno)
+
     existente = db.exec(
         select(Curso).where(
             and_(
@@ -94,7 +162,7 @@ def add_curso_director(db: SessionDep, cue: str, idUsuarioDirector: int, curso: 
                 Curso.cicloLectivo == curso.cicloLectivo,
                 Curso.nombre == curso.nombre,
                 Curso.division == curso.division,
-                Curso.turno == curso.turno,
+                Curso.turno == turno_enum,  
             )
         )
     ).first()
@@ -102,19 +170,18 @@ def add_curso_director(db: SessionDep, cue: str, idUsuarioDirector: int, curso: 
     if existente:
         raise HTTPException(
             status_code=409,
-            detail="Ya existe un curso con esos datos (turno incluido)."
+            detail="Ya existe un curso con esos datos (turno incluido).",
         )
 
     db_curso = Curso(
         nombre=curso.nombre,
         cicloLectivo=curso.cicloLectivo,
         division=curso.division,
+        turno=turno_enum,  # 👈 Enum
         CUE=cue,
-        password=get_password_hash(curso.password),
     )
 
     db.add(db_curso)
     db.commit()
     db.refresh(db_curso)
     return db_curso
-

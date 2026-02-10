@@ -17,13 +17,13 @@ class CursoPublic(CursoBase):
     CUE: str
 
 class CursoCreate(CursoBase):
-    password: str 
+    pass
 
 class CursoUpdate(SQLModel):
     nombre: str | None = None
     cicloLectivo: str | None = None
     division: str | None = None
     turno: TurnoCurso | None = None
-    password: str | None = None
+
 
 
