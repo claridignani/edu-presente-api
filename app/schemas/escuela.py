@@ -9,8 +9,6 @@ from sqlmodel import SQLModel, Field
 
 from app.schemas.curso import CursoPublic
 
-# Gestión (0/3/4) + Distrito (4 dígitos) + Nivel (2 letras) + Escuela (3 o 4 dígitos)
-CUE_RE = re.compile(r"^[034]\d{4}[A-Z]{2}\d{3,4}$")
 TEL_RE = re.compile(r"^\d{10,15}$")
 
 
@@ -104,15 +102,11 @@ class EscuelaCreate(SQLModel):
     def validar_cue_create(cls, v):
         if v is None:
             raise ValueError("El CUE es obligatorio")
+        cue = re.sub(r"\D", "", str(v).strip())
 
-        cue = _strip_str(str(v)).upper().replace(" ", "")
-        cue = re.sub(r"[^0-9A-Z]", "", cue)
-
-        if not CUE_RE.match(cue):
-            raise ValueError(
-                "CUE inválido. Formato esperado: Gestión(0/3/4) + Distrito(4 dígitos) "
-                "+ Nivel(2 letras) + Escuela(3 o 4 dígitos). Ej: 00098PP007"
-            )
+        if not cue:
+            raise ValueError("CUE inválido. Debe contener solo números.")
+            
         return cue
 
     @field_validator("telefono", mode="before")

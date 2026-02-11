@@ -18,10 +18,6 @@ DNI_RE = re.compile(r"^\d{7,8}$")
 CUIL_RE = re.compile(r"^\d{11}$")
 CEL_RE = re.compile(r"^\d{10,15}$")
 
-# CUE: Gestión(0/3/4) + Distrito (4 dígitos) + Nivel (2 letras) + Escuela (3 o 4 dígitos)
-CUE_RE = re.compile(r"^[034]\d{4}[A-Z]{2}\d{3,4}$")
-
-
 def _strip_str(v: str) -> str:
     return v.strip() if isinstance(v, str) else v
 
@@ -177,17 +173,16 @@ class UsuarioCreate(UsuarioBase):
         for cue in cues:
             if cue is None:
                 raise ValueError("CUE inválido")
-            cue_str = _strip_str(str(cue)).upper().replace(" ", "")
-            cue_str = re.sub(r"[^0-9A-Z]", "", cue_str)
+            
+            # Normalizamos: quitamos espacios y dejamos SOLO dígitos
+            cue_str = re.sub(r"\D", "", str(cue).strip())
 
-            if not CUE_RE.match(cue_str):
-                raise ValueError(
-                    f"CUE inválido: {cue}. Formato esperado: Gestión(0/3/4) + Distrito(4) + Nivel(2 letras) + Escuela(3/4). Ej: 00098PP007"
-                )
+            if not cue_str:
+                raise ValueError(f"CUE inválido: {cue}. Debe contener solo números.")
+            
             normalizados.append(cue_str)
 
         return normalizados
-
 
 # ============================================================
 # UPDATE (estricto solo si viene)

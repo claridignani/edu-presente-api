@@ -26,10 +26,8 @@ def _normalize_mail(mail: str) -> str:
 
 
 def _normalize_cue(cue: str) -> str:
-    cue_norm = str(cue).strip().upper().replace(" ", "")
-    cue_norm = re.sub(r"[^0-9A-Z]", "", cue_norm)
+    cue_norm = re.sub(r"\D", "", str(cue).strip())
     return cue_norm
-
 
 # =========================
 # LISTADOS

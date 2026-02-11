@@ -26,20 +26,13 @@ from app.services.usuario_service import (
 
 router = APIRouter(prefix="/usuarios", tags=["Usuarios"])
 
-# Helpers / Regex
-CUE_RE = re.compile(r"^[034]\d{4}[A-Z]{2}\d{3,4}$")
-
-
 def _validate_cue_or_422(cue: str) -> str:
-    cue_norm = str(cue).strip().upper().replace(" ", "")
-    cue_norm = re.sub(r"[^0-9A-Z]", "", cue_norm)
-    if not CUE_RE.match(cue_norm):
+    cue_norm = re.sub(r"\D", "", str(cue).strip())
+    
+    if not cue_norm:
         raise HTTPException(
             status_code=422,
-            detail=(
-                "CUE inválido. Formato esperado: Gestión(0/3/4) + Distrito(4 dígitos) + "
-                "Nivel(2 letras) + Escuela(3 o 4 dígitos). Ej: 00098PP007"
-            ),
+            detail="El CUE es obligatorio y debe contener solo números."
         )
     return cue_norm
 

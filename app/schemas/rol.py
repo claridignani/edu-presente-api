@@ -1,3 +1,4 @@
+from typing import Union
 from enum import Enum
 from sqlmodel import SQLModel, Field
 
@@ -33,5 +34,5 @@ class RolCreate(RolBase):
 class RolUpdate(SQLModel):
     idUsuario: int
     CUE: str
-    estado: RolEstado  
+    estado: Union[bool, RolEstado]
     descripcion: RolDescripcion | None = None

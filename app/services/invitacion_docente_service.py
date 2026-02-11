@@ -1,5 +1,6 @@
 from datetime import date, datetime, timedelta
 import secrets
+import re
 from fastapi import HTTPException
 from sqlmodel import select
 
@@ -11,8 +12,9 @@ from app.schemas.rol import RolDescripcion, RolEstado
 from app.services.rol_service import get_one_rol
 
 def _gen_code(cue: str) -> str:
+    cue_clean = re.sub(r"\D", "", str(cue))
     suf = secrets.token_urlsafe(6).replace("-", "").replace("_", "")[:6].upper()
-    return f"DOC-{cue}-{suf}"
+    return f"DOC-{cue_clean}-{suf}"
 
 def get_invitacion_por_codigo(db: SessionDep, codigo: str) -> InvitacionDocente:
     inv = db.exec(select(InvitacionDocente).where(InvitacionDocente.codigo == codigo)).first()
