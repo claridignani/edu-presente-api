@@ -1,4 +1,3 @@
-# app/schemas/usuario.py
 from __future__ import annotations
 
 import re
@@ -12,7 +11,7 @@ from app.schemas.rol import RolDescripcion, RolPublic, RolEstado
 
 
 # =========================
-# Regex (según reglas)
+# Regex y Helpers
 # =========================
 DNI_RE = re.compile(r"^\d{7,8}$")
 CUIL_RE = re.compile(r"^\d{11}$")
@@ -23,8 +22,6 @@ def _strip_str(v: str) -> str:
 
 
 def _only_digits(v: str) -> str:
-    # Normaliza strings tipo "20-12345678-3" -> "20123456783"
-    # y "12.345.678" -> "12345678"
     v = _strip_str(v)
     if not isinstance(v, str):
         return v
@@ -51,20 +48,17 @@ def _validate_password(pw: str) -> str:
 
 
 # ============================================================
-# BASE (para create/update estrictos)
+# BASE (para registros y actualizaciones)
 # ============================================================
 class UsuarioBase(SQLModel):
     dni: str = Field(index=True, max_length=8)
     cuil: str = Field(index=True, max_length=11)
     celular: str = Field(max_length=15)
-    mailABC: EmailStr = Field(index=True)  # valida formato email
+    mailABC: EmailStr = Field(index=True)
     fechaNacimiento: Optional[date] = None
     nombre: str = Field(max_length=100)
     apellido: str = Field(max_length=100)
 
-    # -------------------------
-    # Validators (estrictos)
-    # -------------------------
     @field_validator("dni", mode="before")
     @classmethod
     def validar_dni(cls, v):
@@ -97,6 +91,10 @@ class UsuarioBase(SQLModel):
             v = v.lower()
         return v
 
+
+# ============================================================
+# PUBLIC (Visualización Básica y Tablas)
+# ============================================================
 class CursoDetallePublic(SQLModel):
     nombre: str
     tipo: str
@@ -116,22 +114,19 @@ class UsuarioPublic(SQLModel):
     @field_validator("dni", mode="before")
     @classmethod
     def normalizar_dni_public(cls, v):
-        if v is None:
-            return v
+        if v is None: return v
         return _only_digits(v)
 
     @field_validator("cuil", mode="before")
     @classmethod
     def normalizar_cuil_public(cls, v):
-        if v is None:
-            return v
+        if v is None: return v
         return _only_digits(v)
 
     @field_validator("celular", mode="before")
     @classmethod
     def normalizar_celular_public(cls, v):
-        if v is None:
-            return v
+        if v is None: return v
         return _only_digits(v)
 
     @field_validator("mailABC", mode="before")
@@ -144,7 +139,20 @@ class UsuarioPublic(SQLModel):
 
 
 # ============================================================
-# CREATE (estricto)
+# FICHA DETALLADA (Para el "Ojito" del Director)
+# ============================================================
+class CursoFichaPublic(SQLModel):
+    nombre: str
+    tipo: str
+    desde: Optional[date] = None
+    hasta: Optional[date] = None
+
+class DocenteFichaPublic(UsuarioPublic):
+    cursos_detalle: List[CursoFichaPublic] = []
+
+
+# ============================================================
+# OPERACIONES (Create / Update)
 # ============================================================
 class UsuarioCreate(UsuarioBase):
     contrasena: str
@@ -169,25 +177,14 @@ class UsuarioCreate(UsuarioBase):
     def validar_cue_items(cls, cues: List[str]):
         if not isinstance(cues, list) or len(cues) == 0:
             raise ValueError("escuelasCUE debe ser una lista con al menos 1 CUE")
-
-        normalizados: List[str] = []
+        normalizados = []
         for cue in cues:
-            if cue is None:
-                raise ValueError("CUE inválido")
-            
-            # Normalizamos: quitamos espacios y dejamos SOLO dígitos
             cue_str = re.sub(r"\D", "", str(cue).strip())
-
             if not cue_str:
-                raise ValueError(f"CUE inválido: {cue}. Debe contener solo números.")
-            
+                raise ValueError(f"CUE inválido: {cue}")
             normalizados.append(cue_str)
-
         return normalizados
 
-# ============================================================
-# UPDATE (estricto solo si viene)
-# ============================================================
 class UsuarioUpdate(SQLModel):
     nombre: Optional[str] = None
     apellido: Optional[str] = None
@@ -198,68 +195,28 @@ class UsuarioUpdate(SQLModel):
     fechaNacimiento: Optional[date] = None
     contrasena: Optional[str] = None
 
-    @field_validator("dni", mode="before")
+    @field_validator("dni", "cuil", "celular", mode="before")
     @classmethod
-    def validar_dni_update(cls, v):
-        if v is None:
-            return v
-        v = _only_digits(v)
-        if not DNI_RE.match(v):
-            raise ValueError("El DNI debe tener 7 u 8 dígitos y solo números")
-        return v
-
-    @field_validator("cuil", mode="before")
-    @classmethod
-    def validar_cuil_update(cls, v):
-        if v is None:
-            return v
-        v = _only_digits(v)
-        if not CUIL_RE.match(v):
-            raise ValueError("El CUIL debe tener 11 dígitos y solo números")
-        return v
-
-    @field_validator("celular", mode="before")
-    @classmethod
-    def validar_celular_update(cls, v):
-        if v is None:
-            return v
-        v = _only_digits(v)
-        if not CEL_RE.match(v):
-            raise ValueError("El celular debe tener entre 10 y 15 dígitos y solo números")
-        return v
-
-    @field_validator("mailABC", mode="before")
-    @classmethod
-    def normalizar_mail_update(cls, v):
-        if v is None:
-            return v
-        v = _strip_str(v)
-        if isinstance(v, str):
-            v = v.lower()
-        return v
+    def validar_campos_update(cls, v):
+        if v is None: return v
+        return _only_digits(v)
 
     @field_validator("contrasena")
     @classmethod
     def validar_contrasena_update(cls, v):
-        if v is None:
-            return v
+        if v is None: return v
         return _validate_password(v)
 
 
 # ============================================================
-# TU MODELO EXISTENTE (si lo usás en algún endpoint)
+# ADMIN Y ROLES
 # ============================================================
 class Usuario_Roles(UsuarioPublic):
     rol: RolPublic
 
-
-# ============================================================
-# NUEVOS MODELOS PARA LISTADO ADMIN (roles + escuelas)
-# ============================================================
 class EscuelaMini(SQLModel):
     CUE: str
     nombre: Optional[str] = None
-
 
 class RolMini(SQLModel):
     descripcion: RolDescripcion
@@ -267,28 +224,11 @@ class RolMini(SQLModel):
     CUE: Optional[str] = None
     nombre_escuela: Optional[str] = None
 
-
 class UsuarioAdminPublic(SQLModel):
     idUsuario: int
     dni: str
     nombre: str
     apellido: str
     mailABC: EmailStr
-
     roles: List[RolMini] = []
     escuelas: List[EscuelaMini] = []
-
-    @field_validator("dni", mode="before")
-    @classmethod
-    def normalizar_dni_admin(cls, v):
-        if v is None:
-            return v
-        return _only_digits(v)
-
-    @field_validator("mailABC", mode="before")
-    @classmethod
-    def normalizar_mail_admin(cls, v):
-        v = _strip_str(v)
-        if isinstance(v, str):
-            v = v.lower()
-        return v

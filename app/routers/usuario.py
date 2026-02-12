@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 import re
 from typing import Annotated, List, Optional
 
@@ -7,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, field_validator
 
 from app.dependencies import SessionDep
-from app.schemas.usuario import UsuarioCreate, UsuarioPublic, UsuarioUpdate
+from app.schemas.usuario import UsuarioCreate, UsuarioPublic, UsuarioUpdate, DocenteFichaPublic
 from app.schemas.rol import RolDescripcion, RolPublic
 from app.core.security import verify_password, get_password_hash
 
@@ -19,9 +20,9 @@ from app.services.usuario_service import (
     get_one_usuario,
     get_usuario_by_dni,
     get_usuarios_by_escuela,
-    # ✅ nuevos (de tu service corregido)
     get_all_usuarios_admin,
     get_usuario_admin_by_id,
+    get_detalle_docente,
 )
 
 router = APIRouter(prefix="/usuarios", tags=["Usuarios"])
@@ -169,13 +170,19 @@ def create(usuario: UsuarioCreate, session: SessionDep):
 # =========================
 # OBTENER USUARIO POR ID (BÁSICO)
 # =========================
+@router.get("/detalle-completo", response_model=DocenteFichaPublic)
+def get_detalle(usuario_id: int, cue: str, session: SessionDep):
+    detalle = get_detalle_docente(usuario_id, cue, session)
+    if not detalle:
+        raise HTTPException(status_code=404, detail="Docente no encontrado")
+    return detalle
+
 @router.get("/{usuario_id}", response_model=UsuarioPublic)
 def read(usuario_id: int, session: SessionDep):
     usuario = get_one_usuario(usuario_id, session)
     if not usuario:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
     return usuario
-
 
 # =========================
 # ACTUALIZAR USUARIO (EDITAR PERFIL)
@@ -223,6 +230,7 @@ def cambiar_contrasena(usuario_id: int, payload: CambiarContrasenaIn, session: S
 # =========================
 # ELIMINAR USUARIO
 # =========================
+
 @router.delete("/{usuario_id}", status_code=204)
 def delete(usuario_id: int, session: SessionDep):
     usuario_db = get_one_usuario(usuario_id, session)
@@ -248,3 +256,13 @@ def get_asistentes_por_escuela(CUE: str, session: SessionDep):
     cue = _validate_cue_or_422(CUE)
     rol = RolDescripcion.Asistente
     return get_usuarios_by_escuela(tipo=rol, CUE=cue, db=session)
+
+class CursoFichaPublic(BaseModel):
+    nombre: str
+    tipo: str
+    desde: Optional[date] = None
+    hasta: Optional[date] = None
+
+class DocenteFichaPublic(UsuarioPublic):
+    cursos_detalle: List[CursoFichaPublic] = []
+

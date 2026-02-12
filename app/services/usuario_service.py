@@ -271,3 +271,29 @@ def get_usuarios_by_escuela(tipo: RolDescripcion, CUE: str, db: SessionDep):
         plantel_con_datos.append(user_data)
 
     return plantel_con_datos
+
+def get_detalle_docente(usuario_id: int, cue: str, db: SessionDep):
+    user = db.get(Usuario, usuario_id)
+    if not user:
+        return None
+
+    stmt = (
+        select(Curso.nombre, Curso.division, CursoDocente.tipo, CursoDocente.fechaDesde, CursoDocente.fechaHasta)
+        .join(CursoDocente, CursoDocente.idCurso == Curso.idCurso)
+        .where(CursoDocente.idUsuario == usuario_id, Curso.CUE == cue)
+    )
+    asignaciones = db.exec(stmt).all()
+
+    cursos_detalle = [
+        {
+            "nombre": f"{c[0]} {c[1]}",
+            "tipo": c[2],
+            "desde": c[3],
+            "hasta": c[4]
+        } for c in asignaciones
+    ]
+
+    resumen = user.model_dump()
+    resumen["mailABC"] = str(resumen.get("mailABC", ""))
+    resumen["cursos_detalle"] = cursos_detalle
+    return resumen
