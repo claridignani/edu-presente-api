@@ -4,10 +4,13 @@ import re
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query
+from sqlalchemy import func, distinct
 from sqlmodel import select
 
 from app.dependencies import SessionDep
 from app.models.escuela import Escuela
+from app.models.curso import Curso
+from app.models.inscriptos import Inscriptos
 from app.schemas.escuela import EscuelaCreate, EscuelaPublic, EscuelaUpdate
 from app.schemas.curso import CursoCreate, CursoPublic
 from app.services.curso_service import add_curso_director, get_cursos_by_cue
@@ -192,3 +195,71 @@ def crear_curso_escuela(
             detail="Solo un Director Activo puede crear cursos",
         )
     return nuevo
+
+
+@router.get("/escuelas/{cue}/stats")
+def escuela_stats(cue: str, session: SessionDep):
+    """
+    Devuelve métricas para el Admin:
+    - cursos_total: cantidad de cursos de la escuela
+    - inscripciones_total: filas totales en Inscriptos (histórico)
+    - inscripciones_activas: filas con estado='Activo'
+    - alumnos_total: alumnos únicos (histórico)
+    - alumnos_activos: alumnos únicos con estado='Activo' (matrícula actual)
+    """
+    cue = _validate_cue_or_422(cue)
+
+    db_escuela = session.get(Escuela, cue)
+    if not db_escuela:
+        raise HTTPException(status_code=404, detail="Escuela no encontrada")
+
+    cursos_total = session.exec(
+        select(func.count(Curso.idCurso)).where(Curso.CUE == cue)
+    ).one()
+
+    inscripciones_total = session.exec(
+        select(func.count())
+        .select_from(Inscriptos)
+        .join(Curso, Curso.idCurso == Inscriptos.idCurso)
+        .where(Curso.CUE == cue)
+    ).one()
+
+    inscripciones_activas = session.exec(
+        select(func.count())
+        .select_from(Inscriptos)
+        .join(Curso, Curso.idCurso == Inscriptos.idCurso)
+        .where(
+            (Curso.CUE == cue) &
+            (Inscriptos.estado == "Activo")
+            # opcional (si querés consistencia extra):
+            # & (Inscriptos.fechaBaja.is_(None))
+        )
+    ).one()
+
+    alumnos_total = session.exec(
+        select(func.count(distinct(Inscriptos.idAlumno)))
+        .select_from(Inscriptos)
+        .join(Curso, Curso.idCurso == Inscriptos.idCurso)
+        .where(Curso.CUE == cue)
+    ).one()
+
+    alumnos_activos = session.exec(
+        select(func.count(distinct(Inscriptos.idAlumno)))
+        .select_from(Inscriptos)
+        .join(Curso, Curso.idCurso == Inscriptos.idCurso)
+        .where(
+            (Curso.CUE == cue) &
+            (Inscriptos.estado == "Activo")
+            # opcional:
+            # & (Inscriptos.fechaBaja.is_(None))
+        )
+    ).one()
+
+    return {
+        "CUE": cue,
+        "cursos_total": int(cursos_total or 0),
+        "inscripciones_total": int(inscripciones_total or 0),
+        "inscripciones_activas": int(inscripciones_activas or 0),
+        "alumnos_total": int(alumnos_total or 0),
+        "alumnos_activos": int(alumnos_activos or 0),
+    }
