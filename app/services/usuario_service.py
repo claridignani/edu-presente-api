@@ -14,6 +14,7 @@ from app.models.usuario import Usuario
 from app.models.rol import Rol
 from app.models.escuela import Escuela
 from app.models.curso_docente import CursoDocente
+from app.models.curso import Curso
 
 from app.schemas.usuario import UsuarioCreate, UsuarioUpdate
 from app.schemas.rol import RolDescripcion, RolEstado
@@ -231,17 +232,42 @@ def delete_one_usuario(usuario: Usuario, db: SessionDep):
 # =========================
 # FILTRO POR ESCUELA + ROL
 # =========================
-def get_usuarios_by_escuela(tipo: RolDescripcion, CUE: str, db: SessionDep):
+def get_usuarios_by_escuela(tipo: RolDescripcion, CUE: str, db: SessionDep): 
     cue = _normalize_cue(CUE)
 
     statement = (
         select(Usuario)
-        .select_from(Usuario)
         .join(Rol, Rol.idUsuario == Usuario.idUsuario)
         .where(
             Rol.estado == RolEstado.Activo,
-            Rol.descripcion == tipo,
+            Rol.descripcion == tipo, 
             Rol.CUE == cue,
         )
     )
-    return db.exec(statement).all()
+    usuarios = db.exec(statement).all()
+    
+    plantel_con_datos = []
+    for user in usuarios:
+        user_data = user.model_dump()
+        
+        stmt_c = (
+            select(Curso.nombre, Curso.division, CursoDocente.tipo)
+            .join(CursoDocente, CursoDocente.idCurso == Curso.idCurso)
+            .where(CursoDocente.idUsuario == user.idUsuario, Curso.CUE == cue)
+        )
+        asignaciones = db.exec(stmt_c).all()
+
+        user_data["cursos"] = [
+            {"nombre": f"{c[0]} {c[1]}", "tipo": c[2]} 
+            for c in asignaciones]
+        
+        tipos_encontrados = set(c[2] for c in asignaciones if c[2])
+        
+        if tipos_encontrados:
+            user_data["tipo"] = " / ".join(sorted(list(tipos_encontrados)))
+        else:
+            user_data["tipo"] = "Titular" 
+        
+        plantel_con_datos.append(user_data)
+
+    return plantel_con_datos

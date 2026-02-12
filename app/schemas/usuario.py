@@ -97,10 +97,10 @@ class UsuarioBase(SQLModel):
             v = v.lower()
         return v
 
+class CursoDetallePublic(SQLModel):
+    nombre: str
+    tipo: str
 
-# ============================================================
-# PUBLIC (tolerante: NO rompe si hay datos viejos incorrectos)
-# ============================================================
 class UsuarioPublic(SQLModel):
     idUsuario: int
     dni: str
@@ -110,8 +110,9 @@ class UsuarioPublic(SQLModel):
     fechaNacimiento: Optional[date] = None
     nombre: str
     apellido: str
+    tipo: str = "Titular"
+    cursos: List[CursoDetallePublic] = []
 
-    # ✅ Normalizamos, pero NO exigimos regex (evita 500 en responses)
     @field_validator("dni", mode="before")
     @classmethod
     def normalizar_dni_public(cls, v):
