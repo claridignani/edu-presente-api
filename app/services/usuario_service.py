@@ -250,10 +250,15 @@ def get_usuarios_by_escuela(tipo: RolDescripcion, CUE: str, db: SessionDep):
     for user in usuarios:
         user_data = user.model_dump()
         
+        # ✅ Filtramos también aquí por estado Activo
         stmt_c = (
             select(Curso.nombre, Curso.division, CursoDocente.tipo)
             .join(CursoDocente, CursoDocente.idCurso == Curso.idCurso)
-            .where(CursoDocente.idUsuario == user.idUsuario, Curso.CUE == cue)
+            .where(
+                CursoDocente.idUsuario == user.idUsuario, 
+                Curso.CUE == cue,
+                CursoDocente.estado == "Activo" # <--- Importante
+            )
         )
         asignaciones = db.exec(stmt_c).all()
 
@@ -272,28 +277,50 @@ def get_usuarios_by_escuela(tipo: RolDescripcion, CUE: str, db: SessionDep):
 
     return plantel_con_datos
 
+
 def get_detalle_docente(usuario_id: int, cue: str, db: SessionDep):
     user = db.get(Usuario, usuario_id)
     if not user:
         return None
 
+    # Traemos el ID de la tabla intermedia (CursoDocente) para asegurar el vínculo
     stmt = (
-        select(Curso.nombre, Curso.division, CursoDocente.tipo, CursoDocente.fechaDesde, CursoDocente.fechaHasta)
-        .join(CursoDocente, CursoDocente.idCurso == Curso.idCurso)
-        .where(CursoDocente.idUsuario == usuario_id, Curso.CUE == cue)
+        select(
+            CursoDocente.idCurso,    # 👈 Sacamos el ID de la tabla de asignación
+            Curso.nombre, 
+            Curso.division, 
+            CursoDocente.tipo, 
+            CursoDocente.fechaDesde, 
+            CursoDocente.fechaHasta
+        )
+        .join(Curso, Curso.idCurso == CursoDocente.idCurso) # Join hacia la info del curso
+        .where(
+            CursoDocente.idUsuario == usuario_id, 
+            Curso.CUE == cue,
+            CursoDocente.estado == "Activo" 
+        )
     )
+    
+    # Usamos .all() y mapeamos manualmente para que no haya dudas
     asignaciones = db.exec(stmt).all()
 
-    cursos_detalle = [
-        {
-            "nombre": f"{c[0]} {c[1]}",
-            "tipo": c[2],
-            "desde": c[3],
-            "hasta": c[4]
-        } for c in asignaciones
-    ]
+    lista_cursos = []
+    for c in asignaciones:
+        lista_cursos.append({
+            "idCurso": int(c[0]), # 👈 El ID que viene de CursoDocente
+            "nombre": f"{c[1]} {c[2]}",
+            "tipo": c[3],
+            "desde": c[4],
+            "hasta": c[5]
+        })
 
-    resumen = user.model_dump()
-    resumen["mailABC"] = str(resumen.get("mailABC", ""))
-    resumen["cursos_detalle"] = cursos_detalle
-    return resumen
+    return {
+        "idUsuario": user.idUsuario,
+        "nombre": user.nombre,
+        "apellido": user.apellido,
+        "dni": user.dni,
+        "cuil": getattr(user, "cuil", ""),
+        "celular": getattr(user, "celular", ""),
+        "mailABC": user.mailABC,
+        "cursos_detalle": lista_cursos
+    }

@@ -9,6 +9,7 @@ from pydantic import BaseModel, field_validator
 
 from app.dependencies import SessionDep
 from app.schemas.usuario import UsuarioCreate, UsuarioPublic, UsuarioUpdate, DocenteFichaPublic
+from app.services.curso_docente_service import inactivar_docente_de_curso
 from app.schemas.rol import RolDescripcion, RolPublic
 from app.core.security import verify_password, get_password_hash
 
@@ -83,7 +84,6 @@ def _map_admin_rows(rows) -> list[UsuarioAdminOut]:
             base = UsuarioPublic.model_validate(usuario)
             agrupados[usuario.idUsuario] = UsuarioAdminOut(**base.model_dump(), roles=[])
 
-        # Puede venir sin rol (outerjoin)
         if rol is None:
             continue
 
@@ -111,9 +111,6 @@ def get_all(
 ):
     return get_all_usuarios(session, offset, limit)
 
-
-# ✅ ALIAS para que NO rompa si el front llama /usuarios/usuarios
-# (tiene que ir ANTES de /{usuario_id})
 @router.get("/usuarios", response_model=list[UsuarioPublic])
 def get_all_alias(
     session: SessionDep,
@@ -122,6 +119,10 @@ def get_all_alias(
 ):
     return get_all_usuarios(session, offset, limit)
 
+@router.patch("/quitar-curso/{idCurso}/{idUsuario}")
+def quitar_curso(idCurso: int, idUsuario: int, session: SessionDep):
+    """Endpoint para inactivar la relación docente-curso"""
+    return inactivar_docente_de_curso(session, idCurso, idUsuario)
 
 # =========================
 # LISTAR USUARIOS (ADMIN: con roles + escuela)

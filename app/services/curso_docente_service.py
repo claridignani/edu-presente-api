@@ -68,3 +68,23 @@ def listar_docentes_de_curso(db: SessionDep, idCurso: int):
     stmt = select(CursoDocente).where(CursoDocente.idCurso == idCurso)
     return db.exec(stmt).all()
 
+def inactivar_docente_de_curso(db: SessionDep, idCurso: int, idUsuario: int):
+    asignacion = db.get(CursoDocente, (idCurso, idUsuario))
+    if not asignacion:
+        raise HTTPException(status_code=404, detail="La asignación no existe")
+    
+    asignacion.estado = "Inactivo"
+    
+    db.add(asignacion)
+    db.commit()
+    db.refresh(asignacion)
+    return {"ok": True, "message": "Asignación inactivada correctamente"}
+
+# Modificamos listar_docentes_de_curso para que solo traiga Activos por defecto
+def listar_docentes_activos_de_curso(db: SessionDep, idCurso: int):
+    stmt = select(CursoDocente).where(
+        CursoDocente.idCurso == idCurso,
+        CursoDocente.estado == "Activo"
+    )
+    return db.exec(stmt).all()
+

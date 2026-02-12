@@ -142,6 +142,7 @@ class UsuarioPublic(SQLModel):
 # FICHA DETALLADA (Para el "Ojito" del Director)
 # ============================================================
 class CursoFichaPublic(SQLModel):
+    idCurso: int  
     nombre: str
     tipo: str
     desde: Optional[date] = None
