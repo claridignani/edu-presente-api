@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+from sqlalchemy import extract
 import re
 from datetime import datetime
 from typing import Annotated
@@ -324,3 +324,52 @@ def get_detalle_docente(usuario_id: int, cue: str, db: SessionDep):
         "mailABC": user.mailABC,
         "cursos_detalle": lista_cursos
     }
+
+def get_historial_asignaciones(db: SessionDep, cue: str, usuario_id: int | None = None, anio: int | None = None):
+    # Base de la consulta: Queremos ver TODO (Activos e Inactivos)
+    stmt = (
+        select(
+            Usuario.nombre,
+            Usuario.apellido,
+            Curso.nombre.label("nombre_curso"),
+            Curso.division,
+            CursoDocente.tipo,
+            CursoDocente.estado,
+            CursoDocente.fechaDesde,
+            CursoDocente.fechaHasta,
+            CursoDocente.idUsuario
+        )
+        .join(Usuario, Usuario.idUsuario == CursoDocente.idUsuario)
+        .join(Curso, Curso.idCurso == CursoDocente.idCurso)
+        .where(Curso.CUE == cue)
+    )
+
+    # Filtros dinámicos
+    if usuario_id:
+        stmt = stmt.where(CursoDocente.idUsuario == usuario_id)
+    
+    if anio:
+        # Filtramos si la asignación empezó o terminó en ese año
+        stmt = stmt.where(
+            (extract('year', CursoDocente.fechaDesde) == anio) | 
+            (extract('year', CursoDocente.fechaHasta) == anio)
+        )
+
+    # Ordenamos por fecha de inicio (más reciente primero)
+    stmt = stmt.order_by(CursoDocente.fechaDesde.desc())
+    
+    resultados = db.exec(stmt).all()
+
+    historial = []
+    for r in resultados:
+        historial.append({
+            "docente": f"{r[1]}, {r[0]}", # Apellido, Nombre
+            "curso": f"{r[2]} {r[3]}",
+            "tipo": r[4],
+            "estado": r[5],
+            "desde": r[6],
+            "hasta": r[7],
+            "usuarioId": r[8]
+        })
+    
+    return historial

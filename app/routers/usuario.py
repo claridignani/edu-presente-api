@@ -24,6 +24,7 @@ from app.services.usuario_service import (
     get_all_usuarios_admin,
     get_usuario_admin_by_id,
     get_detalle_docente,
+    get_historial_asignaciones,
 )
 
 router = APIRouter(prefix="/usuarios", tags=["Usuarios"])
@@ -267,3 +268,12 @@ class CursoFichaPublic(BaseModel):
 class DocenteFichaPublic(UsuarioPublic):
     cursos_detalle: List[CursoFichaPublic] = []
 
+@router.get("/historial-asignaciones/{cue}")
+def historial_asignaciones(
+    cue: str, 
+    session: SessionDep, 
+    usuario_id: int | None = None, 
+    anio: int | None = None
+):
+    # Esta función devuelve una lista simple de movimientos
+    return get_historial_asignaciones(session, cue, usuario_id, anio)

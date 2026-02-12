@@ -1,6 +1,6 @@
 from fastapi import HTTPException
 from sqlmodel import select
-
+from datetime import datetime
 from app.dependencies import SessionDep
 from app.models.curso import Curso
 from app.models.curso_docente import CursoDocente
@@ -74,6 +74,7 @@ def inactivar_docente_de_curso(db: SessionDep, idCurso: int, idUsuario: int):
         raise HTTPException(status_code=404, detail="La asignación no existe")
     
     asignacion.estado = "Inactivo"
+    asignacion.fechaHasta = datetime.now().date() 
     
     db.add(asignacion)
     db.commit()
