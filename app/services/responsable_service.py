@@ -1,14 +1,15 @@
 from fastapi import HTTPException
 from sqlmodel import select
+from sqlalchemy import func, or_
 
 from app.dependencies import SessionDep
 from app.models.responsable import Responsable
 from app.schemas.responsable import ResponsableCreate, ResponsableUpdate
 
 
-
+# =========================
 # HELPERS
-
+# =========================
 
 def _clean_str(v: str | None) -> str | None:
     if v is None:
@@ -36,47 +37,101 @@ def _exists_responsable_by_field(
     return db.exec(stmt).first() is not None
 
 
-
+# =========================
 # GETTERS
-
+# =========================
 
 def get_one_responsable(idResponsable: int, db: SessionDep):
     return db.get(Responsable, idResponsable)
 
 def get_responsable_by_dni(db: SessionDep, dni: str):
-    stmt = select(Responsable).where(Responsable.dni == dni)
+    dni_clean = _clean_str(dni) or ""
+    stmt = select(Responsable).where(Responsable.dni == dni_clean)
     return db.exec(stmt).first()
 
 
+# =========================
+# SEARCH (Nombre / Apellido / DNI)
+# =========================
 
+def search_responsables(db: SessionDep, q: str, limit: int = 10) -> list[Responsable]:
+    query = _clean_str(q) or ""
+    if len(query) < 2:
+        return []
+
+    q_norm = query.lower()
+    like = f"%{q_norm}%"
+
+    stmt = (
+        select(Responsable)
+        .where(
+            or_(
+                func.lower(Responsable.nombre).like(like),
+                func.lower(Responsable.apellido).like(like),
+                func.lower(Responsable.dni).like(like),
+            )
+        )
+        .limit(int(limit))
+    )
+
+    return list(db.exec(stmt).all())
+
+
+# =========================
 # CREATE
-
+# =========================
+"""
+Regla de negocio:
+- Un Responsable representa a una persona.
+- Una persona puede estar asociada a muchos alumnos (por Parentesco).
+- DNI identifica (único) y si ya existe, se REUTILIZA (no error).
+- Email/celular son OBLIGATORIOS, pero NO únicos.
+"""
 
 def add_responsable(db: SessionDep, responsable_in: ResponsableCreate):
     dni = _clean_str(responsable_in.dni) or ""
-    email = _clean_email(getattr(responsable_in, "email", None)) or ""
-    nro = _clean_str(getattr(responsable_in, "nro_celular", None)) or ""
+    nombre = _clean_str(responsable_in.nombre) or ""
+    apellido = _clean_str(responsable_in.apellido) or ""
+    email = _clean_email(responsable_in.email) or ""
+    nro = _clean_str(responsable_in.nro_celular) or ""
+    direccion = _clean_str(responsable_in.direccion) or ""
+    fecha_nacimiento = responsable_in.fecha_nacimiento
 
-    # obligatorios
+    # =========================
+    # VALIDACIONES OBLIGATORIAS
+    # =========================
     if not dni:
         raise HTTPException(status_code=400, detail="El DNI es obligatorio")
+    if not nombre:
+        raise HTTPException(status_code=400, detail="El nombre es obligatorio")
+    if not apellido:
+        raise HTTPException(status_code=400, detail="El apellido es obligatorio")
+    if not fecha_nacimiento:
+        raise HTTPException(status_code=400, detail="La fecha de nacimiento es obligatoria")
     if not email:
         raise HTTPException(status_code=400, detail="El email es obligatorio")
     if not nro:
         raise HTTPException(status_code=400, detail="El nro_celular es obligatorio")
+    if not direccion:
+        raise HTTPException(status_code=400, detail="La dirección es obligatoria")
 
-    # unicidad (create)
-    if _exists_responsable_by_field(db, Responsable.dni, dni):
-        raise HTTPException(status_code=400, detail="Ya existe otro responsable con ese DNI")
-    if _exists_responsable_by_field(db, Responsable.email, email):
-        raise HTTPException(status_code=400, detail="Ya existe otro responsable con ese EMAIL")
-    if _exists_responsable_by_field(db, Responsable.nro_celular, nro):
-        raise HTTPException(status_code=400, detail="Ya existe otro responsable con ese Número de Celular")
+    # =========================
+    # REUTILIZAR POR DNI
+    # =========================
+    existente = get_responsable_by_dni(db=db, dni=dni)
+    if existente:
+        return existente
 
+    # =========================
+    # CREAR NUEVO
+    # =========================
     data = responsable_in.model_dump()
     data["dni"] = dni
+    data["nombre"] = nombre
+    data["apellido"] = apellido
     data["email"] = email
     data["nro_celular"] = nro
+    data["direccion"] = direccion
 
     db_resp = Responsable.model_validate(data)
     db.add(db_resp)
@@ -85,9 +140,9 @@ def add_responsable(db: SessionDep, responsable_in: ResponsableCreate):
     return db_resp
 
 
-
+# =========================
 # UPDATE
-
+# =========================
 
 def update_responsable(db: SessionDep, responsable_existente: Responsable, responsable_nuevo: ResponsableUpdate):
     data = responsable_nuevo.model_dump(exclude_unset=True)
@@ -117,20 +172,14 @@ def update_responsable(db: SessionDep, responsable_existente: Responsable, respo
         data["direccion"] = _clean_str(data["direccion"])
         _require_not_empty(data["direccion"], "direccion")
 
-    # unicidad (update) excluyendo el mismo responsable
+    # ✅ Solo validamos DNI como único (porque en DB es único)
     rid = int(responsable_existente.idResponsable)
 
     if data.get("dni"):
         if _exists_responsable_by_field(db, Responsable.dni, data["dni"], exclude_id=rid):
             raise HTTPException(status_code=400, detail="Ya existe otro responsable con ese DNI")
 
-    if data.get("email"):
-        if _exists_responsable_by_field(db, Responsable.email, data["email"], exclude_id=rid):
-            raise HTTPException(status_code=400, detail="Ya existe otro responsable con ese EMAIL")
-
-    if data.get("nro_celular"):
-        if _exists_responsable_by_field(db, Responsable.nro_celular, data["nro_celular"], exclude_id=rid):
-            raise HTTPException(status_code=400, detail="Ya existe otro responsable con ese Número de Celular")
+    # ❌ NO validamos unicidad para email/celular
 
     responsable_existente.sqlmodel_update(data)
     db.add(responsable_existente)
@@ -139,9 +188,9 @@ def update_responsable(db: SessionDep, responsable_existente: Responsable, respo
     return responsable_existente
 
 
-
+# =========================
 # DELETE
-
+# =========================
 
 def delete_responsable(db: SessionDep, responsable: Responsable):
     db.delete(responsable)

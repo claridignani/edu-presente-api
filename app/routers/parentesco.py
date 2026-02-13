@@ -17,15 +17,26 @@ def create_parentesco(payload: ParentescoCreate, session: SessionDep):
 
 @router.put("/", response_model=ParentescoPublic)
 def update_parentesco(payload: ParentescoCreate, session: SessionDep):
+    # UPSERT: si existe, actualiza; si no existe, crea
     rel = session.get(Parentesco, (payload.idAlumno, payload.idResponsable))
+
     if not rel:
-        raise HTTPException(status_code=404, detail="Vínculo alumno-responsable no encontrado")
+        rel = Parentesco(
+            idAlumno=payload.idAlumno,
+            idResponsable=payload.idResponsable,
+            parentesco=payload.parentesco,
+        )
+        session.add(rel)
+        session.commit()
+        session.refresh(rel)
+        return rel
 
     rel.parentesco = payload.parentesco
     session.add(rel)
     session.commit()
     session.refresh(rel)
     return rel
+
 
 @router.get("/responsables-por-alumno/{idAlumno}", response_model=list[ResponsableConParentescoPublic])
 def get_responsables_alumno_route(idAlumno: int, session: SessionDep):

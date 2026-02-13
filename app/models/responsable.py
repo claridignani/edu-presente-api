@@ -9,9 +9,13 @@ if TYPE_CHECKING:
 
 class Responsable(ResponsableBase, table=True):
     idResponsable: int | None = Field(default=None, primary_key=True)
-    dni: str = Field(index=True, unique=True)
-    email: str = Field(index=True, unique=True)
-    nro_celular: str = Field(index=True, unique=True)
+
+    # ✅ DNI único (identidad del responsable)
+    dni: str = Field(index=True, unique=True, max_length=20)
+
+    # ✅ Email y celular NO únicos (pueden repetirse / estar vacíos)
+    email: str = Field(index=True, unique=False, max_length=255)
+    nro_celular: str = Field(index=True, unique=False, max_length=15)
 
     alumnos: list["Alumno"] = Relationship(
         back_populates="responsables",

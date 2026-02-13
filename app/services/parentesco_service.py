@@ -9,18 +9,26 @@ from app.schemas.parentesco import ParentescoCreate, ParentescoPublic, Responsab
 
 
 def add_parentesco(db: SessionDep, rel_in: ParentescoCreate) -> ParentescoPublic:
+    # Validar alumno
     alumno = db.get(Alumno, rel_in.idAlumno)
     if not alumno:
         raise HTTPException(status_code=404, detail="Alumno no encontrado")
 
+    # Validar responsable
     resp = db.get(Responsable, rel_in.idResponsable)
     if not resp:
         raise HTTPException(status_code=404, detail="Responsable no encontrado")
 
+    # ✅ UPSERT: si ya existe el vínculo, actualizamos parentesco (no error)
     ya = db.get(Parentesco, (rel_in.idAlumno, rel_in.idResponsable))
     if ya:
-        raise HTTPException(status_code=400, detail="El responsable ya está vinculado a este alumno")
+        ya.parentesco = rel_in.parentesco
+        db.add(ya)
+        db.commit()
+        db.refresh(ya)
+        return ya
 
+    # Crear vínculo nuevo
     rel = Parentesco.model_validate(rel_in.model_dump())
     db.add(rel)
     db.commit()
@@ -43,10 +51,11 @@ def get_responsables_by_alumno(db: SessionDep, idAlumno: int) -> list[Responsabl
             nombre=r.nombre,
             apellido=r.apellido,
             dni=r.dni,
+            fecha_nacimiento=r.fecha_nacimiento,  # ✅ ahora lo devolvemos
             email=r.email,
             nro_celular=r.nro_celular,
             direccion=r.direccion,
-            parentesco=parentesco
+            parentesco=parentesco,
         )
         for r, parentesco in rows
     ]
