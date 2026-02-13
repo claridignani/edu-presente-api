@@ -1,3 +1,4 @@
+from datetime import date
 from pydantic import Field
 from sqlmodel import SQLModel
 
@@ -21,6 +22,7 @@ class ResponsableConParentescoPublic(SQLModel):
     nombre: str
     apellido: str
     dni: str
+    fecha_nacimiento: date  # ✅ NUEVO
     email: str
     nro_celular: str
     direccion: str
