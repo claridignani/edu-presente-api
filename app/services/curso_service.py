@@ -14,6 +14,11 @@ from app.models.curso_docente import CursoDocente
 from app.models.escuela import Escuela
 from app.schemas.curso import CursoCreate, CursoUpdate, TurnoCurso
 from app.schemas.rol import RolDescripcion, RolEstado
+from app.schemas.cursos_admin import (
+    CopiarEstructuraCursosIn,
+    CopiarEstructuraCursosOut,
+    CursoMiniOut,
+)
 from app.services.rol_service import get_one_rol
 
 logger = logging.getLogger(__name__)
@@ -185,3 +190,142 @@ def add_curso_director(
     db.commit()
     db.refresh(db_curso)
     return db_curso
+
+def copiar_estructura_cursos(db: SessionDep, payload: CopiarEstructuraCursosIn) -> CopiarEstructuraCursosOut:
+    cue = str(payload.cue).strip()
+    ciclo_origen = str(payload.ciclo_origen).strip()
+    ciclo_destino = str(payload.ciclo_destino).strip()
+
+    if ciclo_origen == ciclo_destino:
+        raise HTTPException(status_code=400, detail="El ciclo destino debe ser distinto al ciclo origen")
+
+    # 1) validar director activo
+    rol_dir = get_one_rol(payload.director_id, cue, db)
+    if (
+        not rol_dir
+        or rol_dir.estado != RolEstado.Activo
+        or rol_dir.descripcion != RolDescripcion.Director
+    ):
+        raise HTTPException(status_code=403, detail="Solo un Director Activo puede copiar estructura de cursos")
+    
+    # 1.5) validar que el ciclo destino NO exista aún en esa escuela (modo estricto)
+    existe_destino = db.exec(
+        select(Curso.idCurso).where(
+            and_(
+                Curso.CUE == cue,
+                Curso.cicloLectivo == ciclo_destino,
+            )
+        ).limit(1)
+    ).first()
+
+    if existe_destino:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Ya existen cursos para el ciclo {ciclo_destino} en la escuela {cue}. No se puede copiar estructura.",
+        )
+
+    # 2) traer cursos origen
+    cursos_origen = db.exec(
+        select(Curso).where(
+            and_(
+                Curso.CUE == cue,
+                Curso.cicloLectivo == ciclo_origen,
+            )
+        ).order_by(Curso.nombre, Curso.division)
+    ).all()
+
+    if not cursos_origen:
+        raise HTTPException(status_code=404, detail="No hay cursos en el ciclo origen para esa escuela")
+
+    out = CopiarEstructuraCursosOut(
+        cue=cue,
+        ciclo_origen=ciclo_origen,
+        ciclo_destino=ciclo_destino,
+        cursos_creados=[],
+        cursos_existentes=[],
+        docentes_copiados=0,
+        docentes_omitidos_por_existir=0,
+    )
+
+    # helper para mapear salida
+    def _mini(c: Curso) -> CursoMiniOut:
+        return CursoMiniOut(
+            idCurso=int(c.idCurso),
+            nombre=c.nombre,
+            division=c.division,
+            turno=c.turno,
+            cicloLectivo=c.cicloLectivo,
+        )
+
+    # 3) por cada curso origen → crear si no existe el gemelo en destino
+    mapa_origen_a_destino: dict[int, int] = {}  # idCursoOrigen -> idCursoDestino
+
+    for c in cursos_origen:
+        turno_enum = normalize_turno(c.turno)
+
+        existente = db.exec(
+            select(Curso).where(
+                and_(
+                    Curso.CUE == cue,
+                    Curso.cicloLectivo == ciclo_destino,
+                    Curso.nombre == c.nombre,
+                    Curso.division == c.division,
+                    Curso.turno == turno_enum,
+                )
+            )
+        ).first()
+
+        if existente:
+            out.cursos_existentes.append(_mini(existente))
+            mapa_origen_a_destino[int(c.idCurso)] = int(existente.idCurso)
+            continue
+
+        nuevo = Curso(
+            CUE=cue,
+            nombre=c.nombre,
+            division=c.division,
+            turno=turno_enum,
+            cicloLectivo=ciclo_destino,
+        )
+        db.add(nuevo)
+        db.commit()
+        db.refresh(nuevo)
+
+        out.cursos_creados.append(_mini(nuevo))
+        mapa_origen_a_destino[int(c.idCurso)] = int(nuevo.idCurso)
+
+    # 4) copiar docentes (opcional)
+    if payload.copiar_docentes:
+        for c in cursos_origen:
+            id_origen = int(c.idCurso)
+            id_destino = mapa_origen_a_destino[id_origen]
+
+            docentes_origen = db.exec(
+                select(CursoDocente).where(
+                    CursoDocente.idCurso == id_origen,
+                    CursoDocente.estado == "Activo",
+                )
+            ).all()
+
+            for d in docentes_origen:
+                # no pisar existentes en destino
+                existe_dest = db.get(CursoDocente, (id_destino, d.idUsuario))
+                if existe_dest:
+                    out.docentes_omitidos_por_existir += 1
+                    continue
+
+                nuevo_cd = CursoDocente(
+                    idCurso=id_destino,
+                    idUsuario=d.idUsuario,
+                    tipo=d.tipo,
+                    # nuevo ciclo: sin fechas por defecto
+                    fechaDesde=None,
+                    fechaHasta=None,
+                    estado="Activo",
+                )
+                db.add(nuevo_cd)
+                out.docentes_copiados += 1
+
+        db.commit()
+
+    return out
