@@ -1,6 +1,8 @@
 from enum import Enum
 from sqlmodel import SQLModel, Field
 from datetime import date
+from typing import Optional
+from app.schemas.parentesco import ResponsableConParentescoPublic
 
 class AlumnoEstado(Enum):
     Activo = "Activo"
@@ -29,4 +31,13 @@ class AlumnoUpdate(SQLModel):
     fecha_ingreso: date | None = None
     direccion: str | None = None
     estado: AlumnoEstado | None = None
+
+class AlumnoDetallePublic(SQLModel):
+    idAlumno: int
+    nombre: str
+    apellido: str
+    dni: str
+    estado: str
+    responsable: Optional[ResponsableConParentescoPublic] = None
+
 

@@ -7,6 +7,10 @@ from app.dependencies import SessionDep
 from app.models.alumno import Alumno
 from app.models.inscriptos import Inscriptos
 from app.schemas.alumno import AlumnoCreate, AlumnoUpdate
+from app.schemas.alumno import AlumnoDetallePublic
+from app.models.parentesco import Parentesco
+from app.models.responsable import Responsable
+from app.schemas.parentesco import ResponsableConParentescoPublic
 from app.services.curso_service import get_one_curso
 
 # HELPERS
@@ -36,6 +40,57 @@ def get_all_alumnos(db: SessionDep, offset: int, limit: Annotated[int, Query(le=
 
 
 # GET BY CURSO (INSCRIPTOS)
+
+def get_alumnos_detalle_by_curso(idCurso: int, db: SessionDep):
+    stmt = (
+        select(
+            Alumno,
+            Responsable,
+            Parentesco.parentesco
+        )
+        .join(Inscriptos, Inscriptos.idAlumno == Alumno.idAlumno)
+        .outerjoin(Parentesco, Parentesco.idAlumno == Alumno.idAlumno)
+        .outerjoin(Responsable, Responsable.idResponsable == Parentesco.idResponsable)
+        .where(Inscriptos.idCurso == idCurso)
+    )
+
+    rows = db.exec(stmt).all()
+
+    alumnos_map = {}
+
+    for alumno, responsable, parentesco in rows:
+        if alumno.idAlumno not in alumnos_map:
+            alumnos_map[alumno.idAlumno] = {
+                "alumno": alumno,
+                "responsable": None
+            }
+
+        # Tomamos solo el primero (responsable principal)
+        if responsable and not alumnos_map[alumno.idAlumno]["responsable"]:
+            alumnos_map[alumno.idAlumno]["responsable"] = ResponsableConParentescoPublic(
+                idResponsable=responsable.idResponsable,
+                nombre=responsable.nombre,
+                apellido=responsable.apellido,
+                dni=responsable.dni,
+                fecha_nacimiento=responsable.fecha_nacimiento,
+                email=responsable.email,
+                nro_celular=responsable.nro_celular,
+                direccion=responsable.direccion,
+                parentesco=parentesco,
+            )
+
+    return [
+        AlumnoDetallePublic(
+            idAlumno=a.idAlumno,
+            nombre=a.nombre,
+            apellido=a.apellido,
+            dni=a.dni,
+            estado=a.estado,
+            responsable=data["responsable"],
+        )
+        for data in alumnos_map.values()
+        for a in [data["alumno"]]
+    ]
 
 
 def get_alumnos_by_curso(idCurso: int, db: SessionDep):

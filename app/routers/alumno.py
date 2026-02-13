@@ -4,6 +4,9 @@ from fastapi import APIRouter, HTTPException, Query
 from app.dependencies import SessionDep
 from app.schemas.alumno import AlumnoPublic, AlumnoCreate, AlumnoUpdate
 from app.schemas.parentesco import ResponsableConParentescoPublic
+from app.schemas.alumno import AlumnoDetallePublic
+from app.services.alumno_service import get_alumnos_detalle_by_curso
+
 
 from app.services.alumno_service import (
     get_all_alumnos,
@@ -26,6 +29,10 @@ def getAllAlumnos(
     limit: Annotated[int, Query(le=100)] = 100
 ):
     return get_all_alumnos(db=session, offset=offset, limit=limit)
+
+@router.get("/cursos/{idCurso}/detalle", response_model=list[AlumnoDetallePublic])
+def getAlumnosDetalleByCurso(idCurso: int, session: SessionDep):
+    return get_alumnos_detalle_by_curso(idCurso=idCurso, db=session)
 
 
 @router.get("/cursos/{idCurso}", response_model=list[AlumnoPublic])
