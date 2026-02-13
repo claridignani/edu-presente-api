@@ -1,72 +1,105 @@
+# app/routers/rol.py
 from typing import List
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from app.dependencies import SessionDep
-from app.models.rol import Rol
 from app.schemas.rol import RolCreate, RolDescripcion, RolPublic, RolUpdate
 from app.schemas.usuario import Usuario_Roles
-from app.services.rol_service import change_rol_status, get_roles_pendientes
+from app.services.rol_service import (
+    change_rol_status,
+    get_roles_pendientes,
+    create_rol,  # ✅ nuevo: vincular usuario-escuela (crear fila en rol)
+)
 
 router = APIRouter(prefix="/roles", tags=["Roles"])
 
-@router.post("/update")
+
+# =========================================================
+# ✅ VINCULAR USUARIO ↔ ESCUELA + ROL (crear fila)
+# =========================================================
+@router.post("/", response_model=RolPublic)
+def vincular_usuario_escuela(payload: RolCreate, session: SessionDep):
+    """
+    Crea el vínculo Usuario-Escuela (tabla rol) con descripción y estado.
+    - 404 si usuario o escuela no existen
+    - 409 si ya existe el vínculo (idUsuario, CUE)
+    """
+    db_rol = create_rol(payload=payload, db=session)
+    return RolPublic.model_validate(db_rol)
+
+
+# =========================================================
+# ✅ APROBAR/RECHAZAR / CAMBIAR ESTADO (y opcional descripcion)
+# =========================================================
+@router.post("/update", response_model=RolPublic)
 def change_rol_estado(rol: RolUpdate, session: SessionDep):
-    """Cambia el rol a 'Activo' si el estado es 'true' y a 'Rechazado' si el estado es 'false'"""
-    try:
-        db_rol = change_rol_status(rol=rol, db=session)
-        return {"ok": True, "message": "Estado del rol modificado correctamente"}
-    except Exception:
-        raise HTTPException(status_code=404, detail="idUsuario o CUE incorrectos")
+    """
+    Actualiza un rol existente (idUsuario + CUE):
+    - Si estado viene bool: true -> Activo / false -> Rechazado
+    - Si estado viene enum: lo setea directamente
+    - Si viene descripcion: la actualiza también
+    """
+    db_rol = change_rol_status(rol=rol, db=session)
+    return RolPublic.model_validate(db_rol)
 
 
+# =========================================================
+# PENDIENTES POR TIPO
+# =========================================================
 @router.get("/docentes/pendientes", response_model=List[Usuario_Roles])
 def get_docentes_estado_pendiente(session: SessionDep):
-    """Obtener todos los roles con descripcion 'Docente' cuyo estado sea 'Pendiente'. Devuelve una lista que contiene docentes. Cada docente contiene su rol"""
+    """Docentes con rol Pendiente. Devuelve lista de usuarios con su rol."""
     rol_elegido = RolDescripcion.Docente
     resultados = get_roles_pendientes(db=session, rol=rol_elegido)
-    docentes_roles = []
+
+    docentes_roles: list[Usuario_Roles] = []
     for rol, docente in resultados:
         docente_db = docente.model_dump()
         rol_db = RolPublic.model_validate(rol)
-        docente_rol = Usuario_Roles(**docente_db, rol=rol_db)
-        docentes_roles.append(docente_rol)
+        docentes_roles.append(Usuario_Roles(**docente_db, rol=rol_db))
+
     return docentes_roles
+
 
 @router.get("/directores/pendientes", response_model=List[Usuario_Roles])
 def get_directores_estado_pendiente(session: SessionDep):
-    """Obtener todos los roles con descripcion 'Director' cuyo estado sea 'Pendiente'. Devuelve una lista que contiene directores. Cada director contiene su rol"""
+    """Directores con rol Pendiente. Devuelve lista de usuarios con su rol."""
     rol_elegido = RolDescripcion.Director
     resultados = get_roles_pendientes(db=session, rol=rol_elegido)
-    director_roles = []
+
+    director_roles: list[Usuario_Roles] = []
     for rol, director in resultados:
         director_db = director.model_dump()
         rol_db = RolPublic.model_validate(rol)
-        director_rol = Usuario_Roles(**director_db, rol=rol_db)
-        director_roles.append(director_rol)
+        director_roles.append(Usuario_Roles(**director_db, rol=rol_db))
+
     return director_roles
+
 
 @router.get("/administradores/pendientes", response_model=List[Usuario_Roles])
 def get_administradores_estado_pendiente(session: SessionDep):
-    """Obtener todos los roles con descripcion 'Administrador' cuyo estado sea 'Pendiente'. Devuelve una lista que contiene administradores. Cada administrador contiene su rol"""
+    """Administradores con rol Pendiente. Devuelve lista de usuarios con su rol."""
     rol_elegido = RolDescripcion.Administrador
     resultados = get_roles_pendientes(db=session, rol=rol_elegido)
-    administrador_roles = []
+
+    administrador_roles: list[Usuario_Roles] = []
     for rol, administrador in resultados:
         administrador_db = administrador.model_dump()
         rol_db = RolPublic.model_validate(rol)
-        administrador_rol = Usuario_Roles(**administrador_db, rol=rol_db)
-        administrador_roles.append(administrador_rol)
+        administrador_roles.append(Usuario_Roles(**administrador_db, rol=rol_db))
+
     return administrador_roles
 
 
 @router.get("/asistentes/pendientes", response_model=List[Usuario_Roles])
 def get_asistentes_estado_pendiente(session: SessionDep):
-    """Obtener todos los roles con descripcion 'Asistente' cuyo estado sea 'Pendiente'. Devuelve una lista que contiene asistentes. Cada asistente contiene su rol"""
+    """Asistentes con rol Pendiente. Devuelve lista de usuarios con su rol."""
     rol_elegido = RolDescripcion.Asistente
     resultados = get_roles_pendientes(db=session, rol=rol_elegido)
-    asistente_roles = []
+
+    asistente_roles: list[Usuario_Roles] = []
     for rol, asistente in resultados:
         asistente_db = asistente.model_dump()
         rol_db = RolPublic.model_validate(rol)
-        asistente_rol = Usuario_Roles(**asistente_db, rol=rol_db)
-        asistente_roles.append(asistente_rol)
+        asistente_roles.append(Usuario_Roles(**asistente_db, rol=rol_db))
+
     return asistente_roles
