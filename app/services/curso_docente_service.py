@@ -6,6 +6,8 @@ from app.models.curso import Curso
 from app.models.curso_docente import CursoDocente
 from app.schemas.curso_docente import CursoDocenteCreate
 from app.schemas.rol import RolDescripcion, RolEstado
+from app.models.usuario import Usuario
+from app.schemas.curso_docente import CursoDocenteDetalle
 from app.services.rol_service import get_one_rol
 
 
@@ -89,3 +91,36 @@ def listar_docentes_activos_de_curso(db: SessionDep, idCurso: int):
     )
     return db.exec(stmt).all()
 
+def listar_docentes_detalle_de_curso(db, idCurso: int):
+    stmt = (
+        select(
+            CursoDocente.idCurso,
+            CursoDocente.idUsuario,
+            Usuario.nombre,
+            Usuario.apellido,
+            Usuario.dni,
+            CursoDocente.tipo,
+            CursoDocente.fechaDesde,
+            CursoDocente.fechaHasta,
+            CursoDocente.estado,
+        )
+        .join(Usuario, Usuario.idUsuario == CursoDocente.idUsuario)
+        .where(CursoDocente.idCurso == idCurso)
+    )
+
+    rows = db.exec(stmt).all()
+
+    return [
+        CursoDocenteDetalle(
+            idCurso=r[0],
+            idUsuario=r[1],
+            nombre=r[2],
+            apellido=r[3],
+            dni=r[4],
+            tipo=r[5],
+            fechaDesde=r[6],
+            fechaHasta=r[7],
+            estado=r[8],
+        )
+        for r in rows
+    ]
