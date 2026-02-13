@@ -182,7 +182,7 @@ def get_asistencias_by_curso_alumno(
     limit: int = 200,
 ):
     """
-    ✅ Historial de asistencias para un alumno dentro de un curso.
+    Historial de asistencias para un alumno dentro de un curso.
     (Opcional) filtra por año.
     """
     ensure_curso_exists(db, idCurso)

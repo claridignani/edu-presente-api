@@ -270,10 +270,16 @@ class DocenteFichaPublic(UsuarioPublic):
 
 @router.get("/historial-asignaciones/{cue}")
 def historial_asignaciones(
-    cue: str, 
-    session: SessionDep, 
-    usuario_id: int | None = None, 
-    anio: int | None = None
+    cue: str,
+    session: SessionDep,
+    usuario_id: int | None = None,
+    anio: int | None = None,
+    curso_id: int | None = None  
 ):
-    # Esta función devuelve una lista simple de movimientos
-    return get_historial_asignaciones(session, cue, usuario_id, anio)
+    return get_historial_asignaciones(
+        db=session,
+        cue=cue,
+        usuario_id=usuario_id,
+        anio=anio,
+        curso_id=curso_id 
+    )

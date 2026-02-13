@@ -325,8 +325,13 @@ def get_detalle_docente(usuario_id: int, cue: str, db: SessionDep):
         "cursos_detalle": lista_cursos
     }
 
-def get_historial_asignaciones(db: SessionDep, cue: str, usuario_id: int | None = None, anio: int | None = None):
-    # Base de la consulta: Queremos ver TODO (Activos e Inactivos)
+def get_historial_asignaciones(
+    db: SessionDep,
+    cue: str,
+    usuario_id: int | None = None,
+    anio: int | None = None,
+    curso_id: int | None = None,  
+):
     stmt = (
         select(
             Usuario.nombre,
@@ -337,39 +342,41 @@ def get_historial_asignaciones(db: SessionDep, cue: str, usuario_id: int | None 
             CursoDocente.estado,
             CursoDocente.fechaDesde,
             CursoDocente.fechaHasta,
-            CursoDocente.idUsuario
+            CursoDocente.idUsuario,
+            CursoDocente.idCurso,   
         )
         .join(Usuario, Usuario.idUsuario == CursoDocente.idUsuario)
         .join(Curso, Curso.idCurso == CursoDocente.idCurso)
         .where(Curso.CUE == cue)
     )
 
-    # Filtros dinámicos
     if usuario_id:
         stmt = stmt.where(CursoDocente.idUsuario == usuario_id)
-    
+
+    if curso_id: 
+        stmt = stmt.where(CursoDocente.idCurso == curso_id)
+
     if anio:
-        # Filtramos si la asignación empezó o terminó en ese año
         stmt = stmt.where(
-            (extract('year', CursoDocente.fechaDesde) == anio) | 
+            (extract('year', CursoDocente.fechaDesde) == anio) |
             (extract('year', CursoDocente.fechaHasta) == anio)
         )
 
-    # Ordenamos por fecha de inicio (más reciente primero)
     stmt = stmt.order_by(CursoDocente.fechaDesde.desc())
-    
+
     resultados = db.exec(stmt).all()
 
     historial = []
     for r in resultados:
         historial.append({
-            "docente": f"{r[1]}, {r[0]}", # Apellido, Nombre
+            "docente": f"{r[1]}, {r[0]}",
             "curso": f"{r[2]} {r[3]}",
             "tipo": r[4],
             "estado": r[5],
             "desde": r[6],
             "hasta": r[7],
-            "usuarioId": r[8]
+            "usuarioId": r[8],
+            "idCurso": r[9],  
         })
-    
+
     return historial
