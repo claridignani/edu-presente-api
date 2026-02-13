@@ -1,16 +1,22 @@
+from __future__ import annotations
 from typing import Annotated
+from datetime import datetime
 
 from fastapi import Query, HTTPException
+from typing import Optional
 from sqlmodel import select
+from sqlalchemy import func
 
 from app.dependencies import SessionDep
 from app.models.alumno import Alumno
+from app.models.curso import Curso
 from app.models.inscriptos import Inscriptos
 from app.schemas.alumno import AlumnoCreate, AlumnoUpdate
 from app.schemas.alumno import AlumnoDetallePublic
 from app.models.parentesco import Parentesco
 from app.models.responsable import Responsable
 from app.schemas.parentesco import ResponsableConParentescoPublic
+from app.schemas.alumno_detalle import AlumnoEscuelaDetallePublic, ResponsableMiniPublic
 from app.services.curso_service import get_one_curso
 
 # HELPERS
@@ -91,6 +97,81 @@ def get_alumnos_detalle_by_curso(idCurso: int, db: SessionDep):
         for data in alumnos_map.values()
         for a in [data["alumno"]]
     ]
+
+def get_ciclo_actual() -> str:
+    return str(datetime.now().year)
+
+
+def get_alumnos_detalle_por_escuela(
+    db,
+    cue: str,
+    ciclo_lectivo: Optional[str] = None,
+) -> list[AlumnoEscuelaDetallePublic]:
+
+    if not ciclo_lectivo:
+        ciclo_lectivo = get_ciclo_actual()
+
+    # subquery → 1 responsable por alumno
+    sub_resp = (
+        select(
+            Parentesco.idAlumno.label("idAlumno"),
+            func.min(Parentesco.idResponsable).label("idResponsable"),
+        )
+        .group_by(Parentesco.idAlumno)
+        .subquery()
+    )
+
+    stmt = (
+        select(
+            Alumno,
+            Curso,
+            Responsable,
+            Parentesco.parentesco,
+        )
+        .join(Inscriptos, Inscriptos.idAlumno == Alumno.idAlumno)
+        .join(Curso, Curso.idCurso == Inscriptos.idCurso)
+        .outerjoin(sub_resp, sub_resp.c.idAlumno == Alumno.idAlumno)
+        .outerjoin(Responsable, Responsable.idResponsable == sub_resp.c.idResponsable)
+        .outerjoin(
+            Parentesco,
+            (Parentesco.idAlumno == Alumno.idAlumno)
+            & (Parentesco.idResponsable == sub_resp.c.idResponsable),
+        )
+        .where(Curso.CUE == cue)
+        .where(Curso.cicloLectivo == ciclo_lectivo)
+    )
+
+    rows = db.exec(stmt).all()
+
+    out = []
+
+    for alumno, curso, resp, parentesco in rows:
+        responsable_public = None
+
+        if resp:
+            responsable_public = ResponsableMiniPublic(
+                idResponsable=resp.idResponsable,
+                nombre=resp.nombre,
+                apellido=resp.apellido,
+                parentesco=parentesco,
+                nro_celular=getattr(resp, "nro_celular", None),
+            )
+
+        out.append(
+            AlumnoEscuelaDetallePublic(
+                idAlumno=alumno.idAlumno,
+                nombre=alumno.nombre,
+                apellido=alumno.apellido,
+                dni=alumno.dni,
+                estado=getattr(alumno, "estado", "Activo") or "Activo",
+                idCurso=curso.idCurso,
+                nombreCurso=f"{curso.nombre} {curso.division}".strip(),
+                responsable=responsable_public,
+            )
+        )
+
+    return out
+
 
 
 def get_alumnos_by_curso(idCurso: int, db: SessionDep):

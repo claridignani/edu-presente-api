@@ -1,10 +1,12 @@
-from typing import Annotated
+from typing import Annotated, Optional
 from fastapi import APIRouter, HTTPException, Query
 
 from app.dependencies import SessionDep
 from app.schemas.alumno import AlumnoPublic, AlumnoCreate, AlumnoUpdate
 from app.schemas.parentesco import ResponsableConParentescoPublic
 from app.schemas.alumno import AlumnoDetallePublic
+from app.schemas.alumno_detalle import AlumnoEscuelaDetallePublic
+from app.services.alumno_service import get_alumnos_detalle_por_escuela
 from app.services.alumno_service import get_alumnos_detalle_by_curso
 
 
@@ -33,6 +35,18 @@ def getAllAlumnos(
 @router.get("/cursos/{idCurso}/detalle", response_model=list[AlumnoDetallePublic])
 def getAlumnosDetalleByCurso(idCurso: int, session: SessionDep):
     return get_alumnos_detalle_by_curso(idCurso=idCurso, db=session)
+
+@router.get("/escuela/{cue}/detalle", response_model=list[AlumnoEscuelaDetallePublic])
+def alumnos_detalle_por_escuela(
+    cue: str,
+    session: SessionDep,
+    cicloLectivo: Optional[str] = Query(default=None),
+):
+    return get_alumnos_detalle_por_escuela(
+        db=session,
+        cue=cue,
+        ciclo_lectivo=cicloLectivo,
+    )
 
 
 @router.get("/cursos/{idCurso}", response_model=list[AlumnoPublic])
