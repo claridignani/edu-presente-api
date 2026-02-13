@@ -29,9 +29,9 @@ from app.services.usuario_service import (
 
 router = APIRouter(prefix="/usuarios", tags=["Usuarios"])
 
+
 def _validate_cue_or_422(cue: str) -> str:
     cue_norm = re.sub(r"\D", "", str(cue).strip())
-    
     if not cue_norm:
         raise HTTPException(
             status_code=422,
@@ -102,6 +102,38 @@ def _map_admin_rows(rows) -> list[UsuarioAdminOut]:
 
 
 # =========================
+# ✅ NUEVO: VALIDAR USUARIO POR DNI (para "Solicitar acceso")
+# =========================
+class UsuarioPorDniOut(BaseModel):
+    idUsuario: int
+    dni: str
+    nombre: str = ""
+    apellido: str = ""
+
+
+@router.get("/dni/{dni}", response_model=UsuarioPorDniOut)
+def read_by_dni(dni: str, session: SessionDep):
+    """
+    Devuelve datos básicos del usuario por DNI.
+    - 404 si no existe
+    """
+    dni_norm = re.sub(r"\D", "", str(dni).strip())
+    if not dni_norm:
+        raise HTTPException(status_code=422, detail="DNI inválido")
+
+    usuario = get_usuario_by_dni(session, dni_norm)
+    if not usuario:
+        raise HTTPException(status_code=404, detail="No existe un usuario con ese DNI")
+
+    return UsuarioPorDniOut(
+        idUsuario=usuario.idUsuario,
+        dni=usuario.dni,
+        nombre=usuario.nombre or "",
+        apellido=usuario.apellido or "",
+    )
+
+
+# =========================
 # LISTAR USUARIOS (BÁSICO)
 # =========================
 @router.get("/", response_model=list[UsuarioPublic])
@@ -112,6 +144,7 @@ def get_all(
 ):
     return get_all_usuarios(session, offset, limit)
 
+
 @router.get("/usuarios", response_model=list[UsuarioPublic])
 def get_all_alias(
     session: SessionDep,
@@ -120,10 +153,12 @@ def get_all_alias(
 ):
     return get_all_usuarios(session, offset, limit)
 
+
 @router.patch("/quitar-curso/{idCurso}/{idUsuario}")
 def quitar_curso(idCurso: int, idUsuario: int, session: SessionDep):
     """Endpoint para inactivar la relación docente-curso"""
     return inactivar_docente_de_curso(session, idCurso, idUsuario)
+
 
 # =========================
 # LISTAR USUARIOS (ADMIN: con roles + escuela)
@@ -154,7 +189,6 @@ def read_admin(usuario_id: int, session: SessionDep):
     rows = get_usuario_admin_by_id(session, usuario_id)
     if not rows:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
-    # rows puede tener varias filas por roles → lo mapeamos y devolvemos el 1ero
     return _map_admin_rows(rows)[0]
 
 
@@ -170,7 +204,7 @@ def create(usuario: UsuarioCreate, session: SessionDep):
 
 
 # =========================
-# OBTENER USUARIO POR ID (BÁSICO)
+# OBTENER DOCENTE FICHA (detalle completo)
 # =========================
 @router.get("/detalle-completo", response_model=DocenteFichaPublic)
 def get_detalle(usuario_id: int, cue: str, session: SessionDep):
@@ -179,12 +213,17 @@ def get_detalle(usuario_id: int, cue: str, session: SessionDep):
         raise HTTPException(status_code=404, detail="Docente no encontrado")
     return detalle
 
+
+# =========================
+# OBTENER USUARIO POR ID (BÁSICO)
+# =========================
 @router.get("/{usuario_id}", response_model=UsuarioPublic)
 def read(usuario_id: int, session: SessionDep):
     usuario = get_one_usuario(usuario_id, session)
     if not usuario:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
     return usuario
+
 
 # =========================
 # ACTUALIZAR USUARIO (EDITAR PERFIL)
@@ -194,7 +233,6 @@ def update(usuario_id: int, usuario: UsuarioUpdate, session: SessionDep):
     usuario_db = get_one_usuario(usuario_id, session)
     if not usuario_db:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
-
     return change_usuario(usuario, usuario_db, session)
 
 
@@ -232,7 +270,6 @@ def cambiar_contrasena(usuario_id: int, payload: CambiarContrasenaIn, session: S
 # =========================
 # ELIMINAR USUARIO
 # =========================
-
 @router.delete("/{usuario_id}", status_code=204)
 def delete(usuario_id: int, session: SessionDep):
     usuario_db = get_one_usuario(usuario_id, session)
@@ -259,14 +296,17 @@ def get_asistentes_por_escuela(CUE: str, session: SessionDep):
     rol = RolDescripcion.Asistente
     return get_usuarios_by_escuela(tipo=rol, CUE=cue, db=session)
 
+
 class CursoFichaPublic(BaseModel):
     nombre: str
     tipo: str
     desde: Optional[date] = None
     hasta: Optional[date] = None
 
+
 class DocenteFichaPublic(UsuarioPublic):
     cursos_detalle: List[CursoFichaPublic] = []
+
 
 @router.get("/historial-asignaciones/{cue}")
 def historial_asignaciones(
@@ -274,12 +314,12 @@ def historial_asignaciones(
     session: SessionDep,
     usuario_id: int | None = None,
     anio: int | None = None,
-    curso_id: int | None = None  
+    curso_id: int | None = None
 ):
     return get_historial_asignaciones(
         db=session,
         cue=cue,
         usuario_id=usuario_id,
         anio=anio,
-        curso_id=curso_id 
+        curso_id=curso_id
     )

@@ -4,7 +4,7 @@ import re
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import func, distinct
+from sqlalchemy import func, distinct, or_
 from sqlmodel import select
 
 from app.dependencies import SessionDep
@@ -47,7 +47,6 @@ def _is_valid_email(v: str | None) -> bool:
     if not isinstance(v, str):
         v = str(v)
     v = v.strip()
-    # chequeo simple para salida (no EmailStr estricto)
     return ("@" in v) and ("." in v.split("@")[-1])
 
 
@@ -58,14 +57,12 @@ def _sanitize_escuela_for_public(e: Escuela) -> dict:
     """
     data = e.model_dump()
 
-    # telefono -> solo dígitos, si no cumple 10-15 => None
     tel = _only_digits(data.get("telefono"))
     if tel is None or not TEL_RE.match(tel):
         data["telefono"] = None
     else:
         data["telefono"] = tel
 
-    # correo -> lower + si no tiene pinta de email => None
     mail = data.get("correo_electronico")
     if isinstance(mail, str):
         mail = mail.strip().lower()
@@ -80,6 +77,52 @@ def _sanitize_escuela_for_public(e: Escuela) -> dict:
     return data
 
 
+# =========================================================
+# ✅ NUEVO: BUSCAR ESCUELAS (nombre / CUE / localidad / provincia)
+# GET /escuelas/buscar?q=...&limit=10
+# =========================================================
+@router.get("/buscar", response_model=list[EscuelaPublic])
+def buscar_escuelas(
+    session: SessionDep,
+    q: str = Query(..., min_length=1, description="Texto a buscar (nombre, CUE, localidad, provincia)"),
+    limit: Annotated[int, Query(ge=1, le=50)] = 10,
+):
+    q_raw = (q or "").strip()
+    if not q_raw:
+        return []
+
+    q_digits = re.sub(r"\D", "", q_raw)
+    like_text = f"%{q_raw}%"
+    like_digits = f"%{q_digits}%" if q_digits else None
+
+    conditions = [
+        Escuela.nombre.ilike(like_text),
+        Escuela.localidad.ilike(like_text),
+    ]
+
+    # Si tu modelo tiene provincia, la incluimos sin romper si no existe
+    if hasattr(Escuela, "provincia"):
+        conditions.append(getattr(Escuela, "provincia").ilike(like_text))
+
+    # Búsqueda por CUE: si escriben números (o parte)
+    if like_digits:
+        conditions.append(Escuela.CUE.ilike(like_digits))
+
+    statement = (
+        select(Escuela)
+        .where(or_(*conditions))
+        .order_by(Escuela.nombre)
+        .limit(limit)
+    )
+
+    escuelas = session.exec(statement).all()
+
+    salida: list[EscuelaPublic] = []
+    for e in escuelas:
+        salida.append(EscuelaPublic.model_validate(_sanitize_escuela_for_public(e)))
+    return salida
+
+
 @router.get("/escuelas/", response_model=list[EscuelaPublic])
 def getAllEscuelas(
     session: SessionDep,
@@ -90,7 +133,6 @@ def getAllEscuelas(
     statement = select(Escuela).offset(offset).limit(limit)
     escuelas = session.exec(statement).all()
 
-    # ✅ Convertimos a schema de salida "seguro" (evita 500 por datos viejos)
     salida: list[EscuelaPublic] = []
     for e in escuelas:
         data = _sanitize_escuela_for_public(e)
@@ -115,7 +157,6 @@ def create_escuela(escuela: EscuelaCreate, session: SessionDep):
     session.commit()
     session.refresh(db_escuela)
 
-    # salida sanitizada por las dudas
     return EscuelaPublic.model_validate(_sanitize_escuela_for_public(db_escuela))
 
 
@@ -231,8 +272,6 @@ def escuela_stats(cue: str, session: SessionDep):
         .where(
             (Curso.CUE == cue) &
             (Inscriptos.estado == "Activo")
-            # opcional (si querés consistencia extra):
-            # & (Inscriptos.fechaBaja.is_(None))
         )
     ).one()
 
@@ -250,8 +289,6 @@ def escuela_stats(cue: str, session: SessionDep):
         .where(
             (Curso.CUE == cue) &
             (Inscriptos.estado == "Activo")
-            # opcional:
-            # & (Inscriptos.fechaBaja.is_(None))
         )
     ).one()
 
