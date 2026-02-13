@@ -25,6 +25,9 @@ from app.services.usuario_service import (
     get_usuario_admin_by_id,
     get_detalle_docente,
     get_historial_asignaciones,
+    get_ciclos_lectivos_por_escuela,
+    get_cursos_por_escuela_y_ciclo,
+
 )
 
 router = APIRouter(prefix="/usuarios", tags=["Usuarios"])
@@ -273,13 +276,30 @@ def historial_asignaciones(
     cue: str,
     session: SessionDep,
     usuario_id: int | None = None,
-    anio: int | None = None,
-    curso_id: int | None = None  
+    ciclo_lectivo: str | None = None,
+    curso_id: int | None = None,
 ):
     return get_historial_asignaciones(
         db=session,
         cue=cue,
         usuario_id=usuario_id,
-        anio=anio,
-        curso_id=curso_id 
+        ciclo_lectivo=ciclo_lectivo,
+        curso_id=curso_id,
     )
+
+@router.get("/ciclos-lectivos/{cue}", response_model=list[str])
+def ciclos_lectivos_por_escuela(cue: str, session: SessionDep):
+    return get_ciclos_lectivos_por_escuela(db=session, cue=cue)
+
+@router.get("/cursos-por-ciclo/{cue}")
+def cursos_por_ciclo(
+    cue: str,
+    ciclo_lectivo: str,
+    session: SessionDep,
+):
+    return get_cursos_por_escuela_y_ciclo(
+        db=session,
+        cue=cue,
+        ciclo_lectivo=ciclo_lectivo,
+    )
+

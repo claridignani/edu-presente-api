@@ -329,7 +329,7 @@ def get_historial_asignaciones(
     db: SessionDep,
     cue: str,
     usuario_id: int | None = None,
-    anio: int | None = None,
+    ciclo_lectivo: str | None = None,
     curso_id: int | None = None,  
 ):
     stmt = (
@@ -356,11 +356,9 @@ def get_historial_asignaciones(
     if curso_id: 
         stmt = stmt.where(CursoDocente.idCurso == curso_id)
 
-    if anio:
-        stmt = stmt.where(
-            (extract('year', CursoDocente.fechaDesde) == anio) |
-            (extract('year', CursoDocente.fechaHasta) == anio)
-        )
+    if ciclo_lectivo:
+        stmt = stmt.where(Curso.cicloLectivo == ciclo_lectivo)
+
 
     stmt = stmt.order_by(CursoDocente.fechaDesde.desc())
 
@@ -380,3 +378,39 @@ def get_historial_asignaciones(
         })
 
     return historial
+
+def get_ciclos_lectivos_por_escuela(db: SessionDep, cue: str) -> list[str]:
+    stmt = (
+        select(Curso.cicloLectivo)
+        .where(Curso.CUE == cue)
+        .distinct()
+        .order_by(Curso.cicloLectivo.desc())
+    )
+
+    rows = db.exec(stmt).all()
+    return [r for r in rows if r]
+
+def get_cursos_por_escuela_y_ciclo(
+    db: SessionDep,
+    cue: str,
+    ciclo_lectivo: str,
+):
+    stmt = (
+        select(Curso.idCurso, Curso.nombre, Curso.division)
+        .where(
+            Curso.CUE == cue,
+            Curso.cicloLectivo == ciclo_lectivo,
+        )
+        .order_by(Curso.nombre, Curso.division)
+    )
+
+    rows = db.exec(stmt).all()
+    return [
+        {
+            "idCurso": r[0],
+            "nombre": f"{r[1]} {r[2]}",
+        }
+        for r in rows
+    ]
+
+
