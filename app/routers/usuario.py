@@ -171,6 +171,15 @@ def create(usuario: UsuarioCreate, session: SessionDep):
         raise HTTPException(status_code=400, detail="Ya existe un usuario con este DNI")
     return add_usuario(usuario, session)
 
+# =========================
+# OBTENER USUARIO POR DNI
+# =========================
+@router.get("/dni/{dni}", response_model=UsuarioPublic)
+def read_by_dni(dni: str, session: SessionDep):
+    usuario = get_usuario_by_dni(session, dni)
+    if not usuario:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    return usuario
 
 # =========================
 # OBTENER USUARIO POR ID (BÁSICO)
