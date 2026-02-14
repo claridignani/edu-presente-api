@@ -7,10 +7,12 @@ import logging
 from fastapi import HTTPException, Query
 from sqlalchemy import and_, or_
 from sqlmodel import select
+from sqlalchemy import func
 
 from app.dependencies import SessionDep
 from app.models.curso import Curso
 from app.models.curso_docente import CursoDocente
+from app.models.inscriptos import Inscriptos
 from app.models.escuela import Escuela
 from app.schemas.curso import CursoCreate, CursoUpdate, TurnoCurso
 from app.schemas.rol import RolDescripcion, RolEstado
@@ -329,3 +331,63 @@ def copiar_estructura_cursos(db: SessionDep, payload: CopiarEstructuraCursosIn) 
         db.commit()
 
     return out
+
+def bulk_delete_cursos_director(
+    db,
+    cue: str,
+    director_id: int,
+    ids: list[int],
+    solo_vacios: bool = True,
+):
+    # 1) validar director activo
+    rol_dir = get_one_rol(director_id, cue, db)
+    if (
+        not rol_dir
+        or rol_dir.estado != RolEstado.Activo
+        or rol_dir.descripcion != RolDescripcion.Director
+    ):
+        raise HTTPException(status_code=403, detail="Solo un Director Activo puede eliminar cursos")
+
+    eliminados: list[int] = []
+    omitidos: list[dict] = []
+
+    if not ids:
+        return {"ok": True, "eliminados": [], "omitidos": []}
+
+    # 2) traer cursos y validar cue
+    cursos = db.exec(select(Curso).where(Curso.idCurso.in_(ids))).all()
+    cursos_map = {c.idCurso: c for c in cursos}
+
+    for idc in ids:
+        curso = cursos_map.get(idc)
+        if not curso:
+            omitidos.append({"idCurso": idc, "motivo": "No existe"})
+            continue
+
+        if curso.CUE != cue:
+            omitidos.append({"idCurso": idc, "motivo": "No pertenece a esta escuela"})
+            continue
+
+        if solo_vacios:
+            # alumnos?
+            cant_insc = db.exec(
+                select(func.count()).select_from(Inscriptos).where(Inscriptos.idCurso == idc)
+            ).one()
+            if cant_insc and int(cant_insc) > 0:
+                omitidos.append({"idCurso": idc, "motivo": "Tiene alumnos asignados"})
+                continue
+
+            # docentes asignados (aunque estén inactivos, igual lo consideramos “tiene relación”)
+            cant_doc = db.exec(
+                select(func.count()).select_from(CursoDocente).where(CursoDocente.idCurso == idc)
+            ).one()
+            if cant_doc and int(cant_doc) > 0:
+                omitidos.append({"idCurso": idc, "motivo": "Tiene docentes asignados"})
+                continue
+
+        db.delete(curso)
+        eliminados.append(idc)
+
+    db.commit()
+    return {"ok": True, "eliminados": eliminados, "omitidos": omitidos}
+

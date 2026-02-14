@@ -1,11 +1,12 @@
 from enum import Enum
 from sqlmodel import SQLModel, Field
-
+from typing import List
+from pydantic import BaseModel
 
 class TurnoCurso(str, Enum):
     Manana = "Manana"
     Tarde = "Tarde"
-    DobleTurno = "DobleTurno"  # ✅ igual a la DB (sin espacio)
+    DobleTurno = "DobleTurno"  
 
 
 class CursoBase(SQLModel):
@@ -29,3 +30,14 @@ class CursoUpdate(SQLModel):
     cicloLectivo: str | None = None
     division: str | None = None
     turno: TurnoCurso | None = None
+
+class CursosBulkDeleteIn(BaseModel):
+    cue: str
+    director_id: int
+    ids: List[int]
+    solo_vacios: bool = True
+
+class CursosBulkDeleteOut(BaseModel):
+    ok: bool
+    eliminados: List[int] = []
+    omitidos: List[dict] = []

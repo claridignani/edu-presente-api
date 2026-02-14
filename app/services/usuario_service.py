@@ -1,5 +1,5 @@
 from __future__ import annotations
-from sqlalchemy import extract
+from sqlalchemy import extract, and_
 import re
 from datetime import datetime
 from typing import Annotated
@@ -18,9 +18,9 @@ from app.models.curso import Curso
 
 from app.schemas.usuario import UsuarioCreate, UsuarioUpdate
 from app.schemas.rol import RolDescripcion, RolEstado
+from app.schemas.cursos_admin import CursoMiniOut
 
 import app.services.invitacion_docente_service as inv_service
-
 
 def _normalize_mail(mail: str) -> str:
     return str(mail).strip().lower()
@@ -390,27 +390,22 @@ def get_ciclos_lectivos_por_escuela(db: SessionDep, cue: str) -> list[str]:
     rows = db.exec(stmt).all()
     return [r for r in rows if r]
 
-def get_cursos_por_escuela_y_ciclo(
-    db: SessionDep,
-    cue: str,
-    ciclo_lectivo: str,
-):
+def get_cursos_por_escuela_y_ciclo(db: SessionDep, cue: str, ciclo_lectivo: str):
     stmt = (
-        select(Curso.idCurso, Curso.nombre, Curso.division)
-        .where(
-            Curso.CUE == cue,
-            Curso.cicloLectivo == ciclo_lectivo,
-        )
+        select(Curso.idCurso, Curso.nombre, Curso.division, Curso.turno, Curso.cicloLectivo)
+        .where(Curso.CUE == cue, Curso.cicloLectivo == ciclo_lectivo)
         .order_by(Curso.nombre, Curso.division)
     )
 
     rows = db.exec(stmt).all()
     return [
         {
-            "idCurso": r[0],
-            "nombre": f"{r[1]} {r[2]}",
+            "idCurso": int(r[0]),
+            "nombre": f"{r[1]} {r[2]}",   
+            "anio": r[1],               
+            "division": r[2],
+            "turno": r[3],
+            "cicloLectivo": r[4],
         }
         for r in rows
     ]
-
-

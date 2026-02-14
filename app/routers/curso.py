@@ -9,6 +9,8 @@ from app.schemas.escuela import EscuelaMiniConCursos
 from app.schemas.curso_docente import CursoDocenteCreate, CursoDocentePublic, CursoDocenteDetalle
 from app.schemas.cursos_admin import CopiarEstructuraCursosIn, CopiarEstructuraCursosOut
 from app.services.curso_service import copiar_estructura_cursos
+from app.schemas.curso import CursosBulkDeleteIn, CursosBulkDeleteOut
+from app.services.curso_service import bulk_delete_cursos_director
 
 from app.services.curso_docente_service import (
     asignar_docente_a_curso,
@@ -53,6 +55,15 @@ def get_cursos_por_escuela(cue: str, session: SessionDep):
 def post_copiar_estructura(payload: CopiarEstructuraCursosIn, session: SessionDep):
     return copiar_estructura_cursos(db=session, payload=payload)
 
+@router.post("/bulk-delete", response_model=CursosBulkDeleteOut)
+def bulk_delete(payload: CursosBulkDeleteIn, session: SessionDep):
+    return bulk_delete_cursos_director(
+        db=session,
+        cue=payload.cue,
+        director_id=payload.director_id,
+        ids=payload.ids,
+        solo_vacios=payload.solo_vacios,
+    )
 
 @router.get("/escuelas/{idUsuario}", response_model=List[EscuelaMiniConCursos])
 def get_cursos_and_escuelas_by_usuario(idUsuario: int, session: SessionDep):

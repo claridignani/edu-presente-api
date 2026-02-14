@@ -11,6 +11,7 @@ from app.dependencies import SessionDep
 from app.schemas.usuario import UsuarioCreate, UsuarioPublic, UsuarioUpdate, DocenteFichaPublic
 from app.services.curso_docente_service import inactivar_docente_de_curso
 from app.schemas.rol import RolDescripcion, RolPublic
+from app.schemas.cursos_admin import CursoMiniOut
 from app.core.security import verify_password, get_password_hash
 
 from app.services.usuario_service import (
@@ -289,7 +290,10 @@ def historial_asignaciones(
 def ciclos_lectivos_por_escuela(cue: str, session: SessionDep):
     return get_ciclos_lectivos_por_escuela(db=session, cue=cue)
 
-@router.get("/cursos-por-ciclo/{cue}")
+@router.get(
+    "/cursos-por-ciclo/{cue}",
+    response_model=list[CursoMiniOut]
+)
 def cursos_por_ciclo(
     cue: str,
     ciclo_lectivo: str,

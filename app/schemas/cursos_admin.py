@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 from app.schemas.curso import TurnoCurso
+from typing import List
 
 
 class CopiarEstructuraCursosIn(BaseModel):
@@ -31,3 +32,15 @@ class CopiarEstructuraCursosOut(BaseModel):
 
     docentes_copiados: int = 0
     docentes_omitidos_por_existir: int = 0
+
+class CursosBulkDeleteIn(BaseModel):
+    cue: str
+    director_id: int
+    ids: List[int]
+    solo_vacios: bool = True
+
+class CursosBulkDeleteOut(BaseModel):
+    ok: bool
+    eliminados: List[int] = []
+    omitidos: List[dict] = []  # {idCurso, motivo}
+
