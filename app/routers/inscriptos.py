@@ -1,18 +1,16 @@
-from __future__ import annotations
-
 from fastapi import APIRouter
 from app.dependencies import SessionDep
 from app.schemas.alumno import AlumnoPublic
-from app.schemas.inscriptos import (
-    InscriptosCreate,
-    InscriptosPublic,
-    PromocionarRequest,
-)
+from app.schemas.inscriptos import InscriptosCreate, InscriptosPublic, PromocionarRequest
+from app.schemas.movimientos import PromocionarOut, MovimientoOut, MovimientoDetalleOut
 from app.services.inscriptos_service import (
     inscribir_alumno,
     desinscribir_alumno,
     get_inscriptos_by_curso,
     promocionar_alumnos,
+    listar_movimientos_por_cue,
+    detalle_movimiento,
+    deshacer_movimiento,
 )
 
 router = APIRouter(prefix="/inscriptos", tags=["Inscriptos"])
@@ -38,7 +36,7 @@ def listar_inscriptos(idCurso: int, session: SessionDep, solo_activos: bool = Tr
     return get_inscriptos_by_curso(idCurso=idCurso, db=session, solo_activos=solo_activos)
 
 
-@router.post("/promocionar")
+@router.post("/promocionar", response_model=PromocionarOut)
 def promocionar(payload: PromocionarRequest, session: SessionDep):
     return promocionar_alumnos(
         idCursoOrigen=payload.idCursoOrigen,
@@ -46,4 +44,22 @@ def promocionar(payload: PromocionarRequest, session: SessionDep):
         alumnos=payload.alumnos,
         db=session,
         fecha=payload.fecha,
+        director_id=payload.director_id,
     )
+
+# últimos movimientos por CUE
+@router.get("/movimientos", response_model=list[MovimientoOut])
+def movimientos(cue: str, session: SessionDep, limit: int = 20):
+    return listar_movimientos_por_cue(db=session, cue=cue, limit=limit)
+
+
+# detalle
+@router.get("/movimientos/{idMovimiento}", response_model=MovimientoDetalleOut)
+def movimiento_detalle(idMovimiento: int, session: SessionDep):
+    return detalle_movimiento(db=session, idMovimiento=idMovimiento)
+
+
+# deshacer (DELETE)
+@router.post("/movimientos/{idMovimiento}/deshacer")
+def movimiento_deshacer(idMovimiento: int, session: SessionDep):
+    return deshacer_movimiento(db=session, idMovimiento=idMovimiento)

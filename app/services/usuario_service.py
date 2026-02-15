@@ -393,19 +393,22 @@ def get_ciclos_lectivos_por_escuela(db: SessionDep, cue: str) -> list[str]:
 def get_cursos_por_escuela_y_ciclo(db: SessionDep, cue: str, ciclo_lectivo: str):
     stmt = (
         select(Curso.idCurso, Curso.nombre, Curso.division, Curso.turno, Curso.cicloLectivo)
-        .where(Curso.CUE == cue, Curso.cicloLectivo == ciclo_lectivo)
+        .where(
+            Curso.CUE == cue,
+            Curso.cicloLectivo == ciclo_lectivo,
+        )
         .order_by(Curso.nombre, Curso.division)
     )
 
     rows = db.exec(stmt).all()
     return [
         {
-            "idCurso": int(r[0]),
-            "nombre": f"{r[1]} {r[2]}",   
-            "anio": r[1],               
+            "idCurso": r[0],
+            "nombre": r[1],
             "division": r[2],
-            "turno": r[3],
+            "turno": getattr(r[3], "value", str(r[3])),
             "cicloLectivo": r[4],
         }
         for r in rows
     ]
+

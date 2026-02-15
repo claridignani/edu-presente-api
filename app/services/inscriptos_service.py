@@ -3,12 +3,16 @@ from __future__ import annotations
 from datetime import date
 from fastapi import HTTPException
 from sqlmodel import select
+from sqlalchemy import desc
 
 from app.dependencies import SessionDep
 from app.models.inscriptos import Inscriptos
 from app.models.alumno import Alumno
 from app.models.curso import Curso
+from app.models.movimiento_promocion import MovimientoPromocion
+from app.models.movimiento_promocion_item import MovimientoPromocionItem
 from app.schemas.inscriptos import EstadoInscripcion, AccionPromocion
+from app.schemas.movimientos import PromocionarOut, MovimientoOut, MovimientoDetalleOut, MovimientoItemOut
 from app.services.curso_service import get_one_curso
 
 
@@ -47,6 +51,208 @@ def _cerrar_inscripcion(insc: Inscriptos, estado: EstadoInscripcion, fecha: date
     insc.estado = estado
     insc.fechaBaja = fecha
 
+# =========================
+# ✅ PROMOCIONAR + registrar movimiento
+# =========================
+def promocionar_alumnos(
+    idCursoOrigen: int,
+    idCursoDestino: int,
+    alumnos,
+    db: SessionDep,
+    fecha: date | None = None,
+    director_id: int | None = None,
+) -> PromocionarOut:
+    origen = _get_curso_or_404(db, idCursoOrigen)
+    destino = _get_curso_or_404(db, idCursoDestino)
+
+    if origen.cicloLectivo == destino.cicloLectivo:
+        raise HTTPException(status_code=400, detail="Curso destino debe ser de OTRO ciclo lectivo")
+
+    hoy = fecha or date.today()
+    cue = str(origen.CUE)
+
+    if director_id is None or int(director_id) <= 0:
+        raise HTTPException(status_code=422, detail="Falta director_id válido")
+
+    try:
+        # 1) crear cabecera movimiento
+        mov = MovimientoPromocion(
+            cue=cue,
+            director_id=int(director_id),
+            idCursoOrigen=int(idCursoOrigen),
+            idCursoDestino=int(idCursoDestino),
+            fecha=hoy,
+            estado="Activo",
+        )
+        db.add(mov)
+        db.commit()
+        db.refresh(mov)
+
+        # 2) procesar alumnos y registrar ids de inscripciones
+        for item in alumnos:
+            _get_alumno_or_404(db, item.idAlumno)
+
+            # buscar inscripción activa en origen
+            stmt = select(Inscriptos).where(
+                Inscriptos.idCurso == idCursoOrigen,
+                Inscriptos.idAlumno == item.idAlumno,
+                Inscriptos.activo == True,  # noqa: E712
+            )
+            insc_origen = db.exec(stmt).first()
+            id_insc_origen = int(insc_origen.idInscripcion) if insc_origen else None
+
+            # cerrar origen según acción
+            if insc_origen:
+                if item.accion == AccionPromocion.Promociona:
+                    _cerrar_inscripcion(insc_origen, EstadoInscripcion.Promocionado, hoy)
+                elif item.accion == AccionPromocion.Repite:
+                    _cerrar_inscripcion(insc_origen, EstadoInscripcion.Repitente, hoy)
+                elif item.accion == AccionPromocion.Egresa:
+                    _cerrar_inscripcion(insc_origen, EstadoInscripcion.Egreso, hoy)
+                elif item.accion == AccionPromocion.Baja:
+                    _cerrar_inscripcion(insc_origen, EstadoInscripcion.Baja, hoy)
+
+                db.add(insc_origen)
+
+            # crear destino solo si corresponde
+            id_insc_destino = None
+            if item.accion in (AccionPromocion.Promociona, AccionPromocion.Repite):
+                nueva = Inscriptos(
+                    idCurso=idCursoDestino,
+                    idAlumno=item.idAlumno,
+                    fechaAlta=hoy,
+                    activo=True,
+                    estado=EstadoInscripcion.Repitente
+                    if item.accion == AccionPromocion.Repite
+                    else EstadoInscripcion.Activo,
+                )
+                db.add(nueva)
+                db.commit()
+                db.refresh(nueva)
+                id_insc_destino = int(nueva.idInscripcion)
+
+            # registrar item del movimiento
+            it = MovimientoPromocionItem(
+                idMovimiento=int(mov.idMovimiento),
+                idAlumno=int(item.idAlumno),
+                accion=str(item.accion),
+                idCursoOrigen=int(idCursoOrigen),
+                idCursoDestino=int(idCursoDestino),
+                idInscripcionOrigen=id_insc_origen,
+                idInscripcionDestino=id_insc_destino,
+            )
+            db.add(it)
+
+        db.commit()
+        return PromocionarOut(ok=True, idMovimiento=int(mov.idMovimiento))
+
+    except Exception:
+        db.rollback()
+        raise
+
+
+# =========================
+# ✅ Listar últimos movimientos por CUE
+# =========================
+def listar_movimientos_por_cue(db: SessionDep, cue: str, limit: int = 20) -> list[MovimientoOut]:
+    stmt = (
+        select(MovimientoPromocion)
+        .where(MovimientoPromocion.cue == cue)
+        .order_by(desc(MovimientoPromocion.created_at))
+        .limit(limit)
+    )
+    rows = db.exec(stmt).all()
+    return [
+        MovimientoOut(
+            idMovimiento=r.idMovimiento,
+            cue=r.cue,
+            director_id=r.director_id,
+            idCursoOrigen=r.idCursoOrigen,
+            idCursoDestino=r.idCursoDestino,
+            fecha=r.fecha,
+            estado=r.estado,
+            created_at=r.created_at,
+        )
+        for r in rows
+    ]
+
+
+# =========================
+# ✅ Detalle movimiento (con items)
+# =========================
+def detalle_movimiento(db: SessionDep, idMovimiento: int) -> MovimientoDetalleOut:
+    mov = db.get(MovimientoPromocion, idMovimiento)
+    if not mov:
+        raise HTTPException(status_code=404, detail="Movimiento no encontrado")
+
+    stmt = select(MovimientoPromocionItem).where(MovimientoPromocionItem.idMovimiento == idMovimiento)
+    items = db.exec(stmt).all()
+
+    return MovimientoDetalleOut(
+        idMovimiento=mov.idMovimiento,
+        cue=mov.cue,
+        director_id=mov.director_id,
+        idCursoOrigen=mov.idCursoOrigen,
+        idCursoDestino=mov.idCursoDestino,
+        fecha=mov.fecha,
+        estado=mov.estado,
+        created_at=mov.created_at,
+        items=[
+            MovimientoItemOut(
+                idItem=i.idItem,
+                idAlumno=i.idAlumno,
+                accion=i.accion,
+                idCursoOrigen=i.idCursoOrigen,
+                idCursoDestino=i.idCursoDestino,
+                idInscripcionOrigen=i.idInscripcionOrigen,
+                idInscripcionDestino=i.idInscripcionDestino,
+            )
+            for i in items
+        ],
+    )
+
+
+# =========================
+# ✅ Deshacer (DELETE destino + reabrir origen)
+# =========================
+def deshacer_movimiento(db: SessionDep, idMovimiento: int):
+    mov = db.get(MovimientoPromocion, idMovimiento)
+    if not mov:
+        raise HTTPException(status_code=404, detail="Movimiento no encontrado")
+
+    if mov.estado != "Activo":
+        raise HTTPException(status_code=400, detail="Este movimiento ya fue deshecho o no está activo")
+
+    items = db.exec(
+        select(MovimientoPromocionItem).where(MovimientoPromocionItem.idMovimiento == idMovimiento)
+    ).all()
+
+    try:
+        for it in items:
+            # 1) borrar insc destino si existe
+            if it.idInscripcionDestino:
+                insc_dest = db.get(Inscriptos, it.idInscripcionDestino)
+                if insc_dest:
+                    db.delete(insc_dest)
+
+            # 2) reabrir origen si existe
+            if it.idInscripcionOrigen:
+                insc_org = db.get(Inscriptos, it.idInscripcionOrigen)
+                if insc_org:
+                    insc_org.activo = True
+                    insc_org.fechaBaja = None
+                    insc_org.estado = EstadoInscripcion.Activo
+                    db.add(insc_org)
+
+        mov.estado = "Deshecho"
+        db.add(mov)
+
+        db.commit()
+        return {"ok": True}
+
+    except Exception:
+        db.rollback()
+        raise
 
 # =========================
 # INSCRIBIR (con regla 1-activa)
@@ -124,47 +330,3 @@ def get_inscriptos_by_curso(idCurso: int, db: SessionDep, solo_activos: bool = T
     return db.exec(stmt).all()
 
 
-# =========================
-# PROMOCIONAR (fin de ciclo)
-# =========================
-def promocionar_alumnos(idCursoOrigen: int, idCursoDestino: int, alumnos, db: SessionDep, fecha: date | None = None):
-    origen = _get_curso_or_404(db, idCursoOrigen)
-    destino = _get_curso_or_404(db, idCursoDestino)
-
-    if origen.cicloLectivo == destino.cicloLectivo:
-        raise HTTPException(status_code=400, detail="Curso destino debe ser de OTRO ciclo lectivo")
-
-    hoy = fecha or date.today()
-
-    for item in alumnos:
-        _get_alumno_or_404(db, item.idAlumno)
-
-        # cerrar inscripción activa en origen (si existe)
-        stmt = select(Inscriptos).where(
-            Inscriptos.idCurso == idCursoOrigen,
-            Inscriptos.idAlumno == item.idAlumno,
-            Inscriptos.activo == True,  # noqa: E712
-        )
-        insc_origen = db.exec(stmt).first()
-        if insc_origen:
-            if item.accion == AccionPromocion.Promociona:
-                _cerrar_inscripcion(insc_origen, EstadoInscripcion.Promocionado, hoy)
-            elif item.accion == AccionPromocion.Repite:
-                _cerrar_inscripcion(insc_origen, EstadoInscripcion.Repitente, hoy)
-            elif item.accion == AccionPromocion.Egresa:
-                _cerrar_inscripcion(insc_origen, EstadoInscripcion.Egreso, hoy)
-            elif item.accion == AccionPromocion.Baja:
-                _cerrar_inscripcion(insc_origen, EstadoInscripcion.Baja, hoy)
-
-            db.add(insc_origen)
-
-        # crear en destino solo si corresponde
-        if item.accion in (AccionPromocion.Promociona, AccionPromocion.Repite):
-            # esto ya respeta "1 activa" porque es otro ciclo, pero igual usamos inscribir estándar
-            nueva = inscribir_alumno(idCursoDestino, item.idAlumno, db, fechaAlta=hoy)
-            if item.accion == AccionPromocion.Repite:
-                nueva.estado = EstadoInscripcion.Repitente
-                db.add(nueva)
-
-    db.commit()
-    return {"ok": True}

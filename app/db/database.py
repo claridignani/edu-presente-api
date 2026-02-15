@@ -15,5 +15,7 @@ def create_db_and_tables():
         import app.models.parentesco
         import app.models.curso_docente
         import app.models.invitacion_docente
+        import app.models.movimiento_promocion
+        import app.models.movimiento_promocion_item
 
         SQLModel.metadata.create_all(engine)
