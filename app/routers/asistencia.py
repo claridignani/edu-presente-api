@@ -19,6 +19,8 @@ from app.services.asistencia_service import (
     stats_distribucion_inasistencias,
     stats_riesgo_por_curso,
     stats_lluvia_comparativo,
+    alertas_inasistencias_consecutivas,
+
 )
 
 router = APIRouter(prefix="/asistencias", tags=["Asistencias"])
@@ -164,6 +166,29 @@ def read_stats_lluvia(
         curso_ids=cursos,
     )
 
+# ==========================
+# ✅ Alertas (Asistente Social)
+# ==========================
+
+@router.get("/alertas/consecutivas")
+def read_alertas_inasistencias_consecutivas(
+    session: SessionDep,
+    cue: str,
+    desde: date,
+    hasta: date,
+    min: int = Query(default=3, ge=2, le=30),
+):
+    """
+    Alumnos con AUSENCIAS consecutivas (>= min) en el rango.
+    'min=3' equivale a 'más de 2 seguidas'.
+    """
+    return alertas_inasistencias_consecutivas(
+        db=session,
+        cue=cue,
+        desde=desde,
+        hasta=hasta,
+        min_consecutivas=min,
+    )
 
 # ==========================
 # Reads (más específicas arriba)
