@@ -188,10 +188,11 @@ def listar_movimientos_por_cue(db: SessionDep, cue: str, limit: int = 20) -> lis
             "created_at": m.created_at,
             "cursoOrigen": f"{row.orig_nombre} {row.orig_div} ({row.orig_ciclo})",
             "cursoDestino": f"{row.dest_nombre} {row.dest_div} ({row.dest_ciclo})",
+            "idCursoOrigen": m.idCursoOrigen,
+            "idCursoDestino": m.idCursoDestino,
             "director_id": m.director_id
         })
     return movimientos
-
 
 # =========================
 # ✅ Detalle movimiento 
@@ -220,6 +221,7 @@ def detalle_movimiento(db: SessionDep, idMovimiento: int) -> dict:
         "items": [
             {
                 "idItem": item.MovimientoPromocionItem.idItem,
+                "idAlumno": item.Alumno.idAlumno,  
                 "alumno": f"{item.Alumno.apellido}, {item.Alumno.nombre}",
                 "dni": item.Alumno.dni,
                 "accion": item.MovimientoPromocionItem.accion
@@ -227,7 +229,6 @@ def detalle_movimiento(db: SessionDep, idMovimiento: int) -> dict:
             for item in results
         ]
     }
-
 
 # =========================
 # ✅ Deshacer (DELETE destino + reabrir origen)

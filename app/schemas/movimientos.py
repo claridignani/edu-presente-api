@@ -5,7 +5,7 @@ from pydantic import BaseModel
 # --- Esquema para los Alumnos dentro del detalle ---
 class MovimientoItemOut(BaseModel):
     idItem: int
-    idAlumno: int | None = None 
+    idAlumno: int 
     idCursoOrigen: int | None = None
     idCursoDestino: int | None = None
     alumno: str | None = None
@@ -22,6 +22,8 @@ class MovimientoHistorialOut(BaseModel):
     created_at: datetime | None = None
     cursoOrigen: str 
     cursoDestino: str
+    idCursoOrigen: int | None = None  
+    idCursoDestino: int | None = None 
     director_id: int | None = None 
 
 # --- Esquema para el detalle completo al hacer clic ---
