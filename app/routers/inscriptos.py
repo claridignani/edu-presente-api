@@ -3,6 +3,7 @@ from app.dependencies import SessionDep
 from app.schemas.alumno import AlumnoPublic
 from app.schemas.inscriptos import InscriptosCreate, InscriptosPublic, PromocionarRequest
 from app.schemas.movimientos import PromocionarOut, MovimientoOut, MovimientoDetalleOut, MovimientoHistorialOut
+from app.services import inscriptos_service
 from app.services.inscriptos_service import (
     inscribir_alumno,
     desinscribir_alumno,
@@ -61,3 +62,25 @@ def obtener_detalle(idMovimiento: int, session: SessionDep):
 @router.post("/movimientos/{idMovimiento}/deshacer")
 def movimiento_deshacer(idMovimiento: int, session: SessionDep):
     return deshacer_movimiento(db=session, idMovimiento=idMovimiento)
+
+@router.get("/alumno/{id_alumno}/timeline")
+def leer_timeline_alumno(id_alumno: int, db: SessionDep):
+    """
+    Retorna la cronología de movimientos (promociones, repitencias, etc) de un alumno.
+    """
+    return inscriptos_service.get_timeline_alumno(db=db, id_alumno=id_alumno)
+
+@router.get("/auditoria-alumnos")
+def listar_auditoria_alumnos(
+    cue: str, 
+    session: SessionDep, 
+    anio: str = None, 
+    accion: str = None
+):
+    """
+    Retorna una lista plana de alumnos y sus movimientos para auditoría global.
+    Permite filtrar por año y tipo de acción (Promociona, Repite, etc).
+    """
+    return inscriptos_service.get_auditoria_alumnos_detalle(
+        db=session, cue=cue, anio=anio, accion=accion
+    )

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from fastapi import HTTPException
 from sqlmodel import select
-from sqlalchemy import desc
+from sqlalchemy import desc, func
 
 from app.dependencies import SessionDep
 from app.models.inscriptos import Inscriptos
@@ -347,4 +347,105 @@ def get_inscriptos_by_curso(idCurso: int, db: SessionDep, solo_activos: bool = T
 
     return db.exec(stmt).all()
 
+def get_timeline_alumno(db: SessionDep, id_alumno: int) -> list[dict]:
+    from sqlalchemy.orm import aliased
+    # Alias para unir los nombres de cursos origen y destino
+    CursoOrigen = aliased(Curso)
+    CursoDestino = aliased(Curso)
 
+    stmt = (
+        select(
+            MovimientoPromocion.fecha,
+            MovimientoPromocionItem.accion,
+            CursoOrigen.nombre.label("orig_nombre"),
+            CursoOrigen.division.label("orig_div"),
+            CursoOrigen.cicloLectivo.label("orig_ciclo"),
+            CursoDestino.nombre.label("dest_nombre"),
+            CursoDestino.division.label("dest_div"),
+            CursoDestino.cicloLectivo.label("dest_ciclo")
+        )
+        .join(MovimientoPromocion, MovimientoPromocion.idMovimiento == MovimientoPromocionItem.idMovimiento)
+        .join(CursoOrigen, CursoOrigen.idCurso == MovimientoPromocionItem.idCursoOrigen)
+        .outerjoin(CursoDestino, CursoDestino.idCurso == MovimientoPromocionItem.idCursoDestino)
+        .where(MovimientoPromocionItem.idAlumno == id_alumno)
+        .where(MovimientoPromocion.estado == "Activo")
+        .order_by(desc(MovimientoPromocion.fecha))
+    )
+    
+    results = db.exec(stmt).all()
+    
+    timeline = []
+    for r in results:
+        # Formateamos el detalle según si hubo curso de destino o no
+        detalle_curso = f"De {r.orig_nombre} {r.orig_div} ({r.orig_ciclo})"
+        if r.dest_nombre:
+            detalle_curso += f" a {r.dest_nombre} {r.dest_div} ({r.dest_ciclo})"
+            
+        timeline.append({
+            "fecha": r.fecha,
+            "accion": r.accion,
+            "detalle": detalle_curso
+        })
+    return timeline
+
+def get_auditoria_alumnos_detalle(
+    db: SessionDep, 
+    cue: str, 
+    anio: str = None, 
+    accion: str = None
+) -> list[dict]:
+    from sqlalchemy.orm import aliased
+    from app.models.alumno import Alumno
+    from app.models.curso import Curso
+
+    # Alias para los cursos para saber de dónde viene y a dónde va
+    CursoOrigen = aliased(Curso)
+    CursoDestino = aliased(Curso)
+
+    # La consulta une: Item -> Cabecera -> Alumno -> Cursos
+    stmt = (
+        select(
+            MovimientoPromocion.fecha,
+            MovimientoPromocion.idMovimiento,
+            MovimientoPromocionItem.accion,
+            Alumno.apellido,
+            Alumno.nombre,
+            Alumno.dni,
+            Alumno.idAlumno,
+            CursoOrigen.nombre.label("orig_nombre"),
+            CursoOrigen.division.label("orig_div"),
+            CursoDestino.nombre.label("dest_nombre"),
+            CursoDestino.division.label("dest_div")
+        )
+        .join(MovimientoPromocion, MovimientoPromocion.idMovimiento == MovimientoPromocionItem.idMovimiento)
+        .join(Alumno, Alumno.idAlumno == MovimientoPromocionItem.idAlumno)
+        .join(CursoOrigen, CursoOrigen.idCurso == MovimientoPromocionItem.idCursoOrigen)
+        .outerjoin(CursoDestino, CursoDestino.idCurso == MovimientoPromocionItem.idCursoDestino)
+        .where(MovimientoPromocion.cue == cue)
+        .where(MovimientoPromocion.estado == "Activo")
+    )
+
+    # Aplicamos filtros si vienen en la URL
+    if anio:
+        stmt = stmt.where(func.year(MovimientoPromocion.fecha) == int(anio))
+    
+    if accion:
+        stmt = stmt.where(MovimientoPromocionItem.accion == accion)
+
+    stmt = stmt.order_by(desc(MovimientoPromocion.fecha))
+    
+    results = db.exec(stmt).all()
+    
+    auditoria = []
+    for r in results:
+        auditoria.append({
+            "idMovimiento": r.idMovimiento,
+            "fecha": r.fecha,
+            "idAlumno": r.idAlumno,
+            "alumno": f"{r.apellido}, {r.nombre}",
+            "dni": r.dni,
+            "accion": r.accion,
+            "cursoOrigen": f"{r.orig_nombre} {r.orig_div}",
+            "cursoDestino": f"{r.dest_nombre} {r.dest_div}" if r.dest_nombre else "—"
+        })
+    return auditoria
