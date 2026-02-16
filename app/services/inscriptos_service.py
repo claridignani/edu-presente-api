@@ -154,62 +154,79 @@ def promocionar_alumnos(
 # =========================
 # ✅ Listar últimos movimientos por CUE
 # =========================
-def listar_movimientos_por_cue(db: SessionDep, cue: str, limit: int = 20) -> list[MovimientoOut]:
+def listar_movimientos_por_cue(db: SessionDep, cue: str, limit: int = 20) -> list[dict]:
+    from sqlalchemy.orm import aliased
+    CursoOrigen = aliased(Curso)
+    CursoDestino = aliased(Curso)
+
     stmt = (
-        select(MovimientoPromocion)
+        select(
+            MovimientoPromocion,
+            CursoOrigen.nombre.label("orig_nombre"),
+            CursoOrigen.division.label("orig_div"),
+            CursoOrigen.cicloLectivo.label("orig_ciclo"),
+            CursoDestino.nombre.label("dest_nombre"),
+            CursoDestino.division.label("dest_div"),
+            CursoDestino.cicloLectivo.label("dest_ciclo")
+        )
+        .join(CursoOrigen, CursoOrigen.idCurso == MovimientoPromocion.idCursoOrigen)
+        .join(CursoDestino, CursoDestino.idCurso == MovimientoPromocion.idCursoDestino)
         .where(MovimientoPromocion.cue == cue)
         .order_by(desc(MovimientoPromocion.created_at))
         .limit(limit)
     )
-    rows = db.exec(stmt).all()
-    return [
-        MovimientoOut(
-            idMovimiento=r.idMovimiento,
-            cue=r.cue,
-            director_id=r.director_id,
-            idCursoOrigen=r.idCursoOrigen,
-            idCursoDestino=r.idCursoDestino,
-            fecha=r.fecha,
-            estado=r.estado,
-            created_at=r.created_at,
-        )
-        for r in rows
-    ]
+    
+    results = db.exec(stmt).all()
+    
+    movimientos = []
+    for row in results:
+        m = row.MovimientoPromocion
+        movimientos.append({
+            "idMovimiento": m.idMovimiento,
+            "fecha": m.fecha,
+            "estado": m.estado,
+            "created_at": m.created_at,
+            "cursoOrigen": f"{row.orig_nombre} {row.orig_div} ({row.orig_ciclo})",
+            "cursoDestino": f"{row.dest_nombre} {row.dest_div} ({row.dest_ciclo})",
+            "director_id": m.director_id
+        })
+    return movimientos
 
 
 # =========================
-# ✅ Detalle movimiento (con items)
+# ✅ Detalle movimiento 
 # =========================
-def detalle_movimiento(db: SessionDep, idMovimiento: int) -> MovimientoDetalleOut:
+def detalle_movimiento(db: SessionDep, idMovimiento: int) -> dict:
     mov = db.get(MovimientoPromocion, idMovimiento)
     if not mov:
         raise HTTPException(status_code=404, detail="Movimiento no encontrado")
 
-    stmt = select(MovimientoPromocionItem).where(MovimientoPromocionItem.idMovimiento == idMovimiento)
-    items = db.exec(stmt).all()
-
-    return MovimientoDetalleOut(
-        idMovimiento=mov.idMovimiento,
-        cue=mov.cue,
-        director_id=mov.director_id,
-        idCursoOrigen=mov.idCursoOrigen,
-        idCursoDestino=mov.idCursoDestino,
-        fecha=mov.fecha,
-        estado=mov.estado,
-        created_at=mov.created_at,
-        items=[
-            MovimientoItemOut(
-                idItem=i.idItem,
-                idAlumno=i.idAlumno,
-                accion=i.accion,
-                idCursoOrigen=i.idCursoOrigen,
-                idCursoDestino=i.idCursoDestino,
-                idInscripcionOrigen=i.idInscripcionOrigen,
-                idInscripcionDestino=i.idInscripcionDestino,
-            )
-            for i in items
-        ],
+    stmt = (
+        select(MovimientoPromocionItem, Alumno)
+        .join(Alumno, Alumno.idAlumno == MovimientoPromocionItem.idAlumno)
+        .where(MovimientoPromocionItem.idMovimiento == idMovimiento)
     )
+    results = db.exec(stmt).all()
+
+    co = db.get(Curso, mov.idCursoOrigen)
+    cd = db.get(Curso, mov.idCursoDestino)
+
+    return {
+        "idMovimiento": mov.idMovimiento,
+        "fecha": mov.fecha,
+        "estado": mov.estado,
+        "cursoOrigen": f"{co.nombre} {co.division}",
+        "cursoDestino": f"{cd.nombre} {cd.division}",
+        "items": [
+            {
+                "idItem": item.MovimientoPromocionItem.idItem,
+                "alumno": f"{item.Alumno.apellido}, {item.Alumno.nombre}",
+                "dni": item.Alumno.dni,
+                "accion": item.MovimientoPromocionItem.accion
+            }
+            for item in results
+        ]
+    }
 
 
 # =========================

@@ -2,7 +2,7 @@ from fastapi import APIRouter
 from app.dependencies import SessionDep
 from app.schemas.alumno import AlumnoPublic
 from app.schemas.inscriptos import InscriptosCreate, InscriptosPublic, PromocionarRequest
-from app.schemas.movimientos import PromocionarOut, MovimientoOut, MovimientoDetalleOut
+from app.schemas.movimientos import PromocionarOut, MovimientoOut, MovimientoDetalleOut, MovimientoHistorialOut
 from app.services.inscriptos_service import (
     inscribir_alumno,
     desinscribir_alumno,
@@ -48,14 +48,12 @@ def promocionar(payload: PromocionarRequest, session: SessionDep):
     )
 
 # últimos movimientos por CUE
-@router.get("/movimientos", response_model=list[MovimientoOut])
-def movimientos(cue: str, session: SessionDep, limit: int = 20):
+@router.get("/movimientos", response_model=list[MovimientoHistorialOut]) 
+def listar_movimientos(cue: str, session: SessionDep, limit: int = 20):
     return listar_movimientos_por_cue(db=session, cue=cue, limit=limit)
 
-
-# detalle
 @router.get("/movimientos/{idMovimiento}", response_model=MovimientoDetalleOut)
-def movimiento_detalle(idMovimiento: int, session: SessionDep):
+def obtener_detalle(idMovimiento: int, session: SessionDep):
     return detalle_movimiento(db=session, idMovimiento=idMovimiento)
 
 
