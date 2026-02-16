@@ -6,9 +6,6 @@ from app.schemas.alumno import AlumnoPublic, AlumnoCreate, AlumnoUpdate
 from app.schemas.parentesco import ResponsableConParentescoPublic
 from app.schemas.alumno import AlumnoDetallePublic
 from app.schemas.alumno_detalle import AlumnoEscuelaDetallePublic
-from app.services.alumno_service import get_alumnos_detalle_por_escuela
-from app.services.alumno_service import get_alumnos_detalle_by_curso
-
 
 from app.services.alumno_service import (
     get_all_alumnos,
@@ -16,10 +13,12 @@ from app.services.alumno_service import (
     add_alumno,
     get_one_alumno,
     update_alumno,
+    get_alumnos_detalle_por_escuela,
+    get_alumnos_detalle_by_curso,
+    get_alumno_detalle_por_id,
 )
 
 from app.services.parentesco_service import get_responsables_by_alumno
-
 
 router = APIRouter(prefix="/alumnos", tags=["Alumnos"])
 
@@ -32,9 +31,11 @@ def getAllAlumnos(
 ):
     return get_all_alumnos(db=session, offset=offset, limit=limit)
 
+
 @router.get("/cursos/{idCurso}/detalle", response_model=list[AlumnoDetallePublic])
 def getAlumnosDetalleByCurso(idCurso: int, session: SessionDep):
     return get_alumnos_detalle_by_curso(idCurso=idCurso, db=session)
+
 
 @router.get("/escuela/{cue}/detalle", response_model=list[AlumnoEscuelaDetallePublic])
 def alumnos_detalle_por_escuela(
@@ -47,6 +48,14 @@ def alumnos_detalle_por_escuela(
         cue=cue,
         ciclo_lectivo=cicloLectivo,
     )
+
+
+@router.get("/{idAlumno}/detalle", response_model=AlumnoEscuelaDetallePublic)
+def alumno_detalle_por_id(
+    idAlumno: int,
+    session: SessionDep,
+):
+    return get_alumno_detalle_por_id(db=session, idAlumno=idAlumno)
 
 
 @router.get("/cursos/{idCurso}", response_model=list[AlumnoPublic])

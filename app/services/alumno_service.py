@@ -5,7 +5,7 @@ from datetime import datetime
 from fastapi import Query, HTTPException
 from typing import Optional
 from sqlmodel import select
-from sqlalchemy import func
+from sqlalchemy import func, and_
 
 from app.dependencies import SessionDep
 from app.models.alumno import Alumno
@@ -172,6 +172,77 @@ def get_alumnos_detalle_por_escuela(
 
     return out
 
+def get_alumno_detalle_por_id(
+    db: SessionDep,
+    idAlumno: int,
+) -> AlumnoEscuelaDetallePublic:
+    """
+    Devuelve el detalle completo de 1 alumno (para el dialog de alertas):
+    - nombre, apellido, dni, estado
+    - curso actual (uno)
+    - responsable mini (uno)
+    """
+
+    # subquery → 1 responsable por alumno (mismo criterio que por escuela)
+    sub_resp = (
+        select(
+            Parentesco.idAlumno.label("idAlumno"),
+            func.min(Parentesco.idResponsable).label("idResponsable"),
+        )
+        .where(Parentesco.idAlumno == idAlumno)
+        .group_by(Parentesco.idAlumno)
+        .subquery()
+    )
+
+    # Traemos un curso vinculado por Inscriptos (si hay múltiples, tomamos 1)
+    stmt = (
+        select(
+            Alumno,
+            Curso,
+            Responsable,
+            Parentesco.parentesco,
+        )
+        .join(Inscriptos, Inscriptos.idAlumno == Alumno.idAlumno)
+        .join(Curso, Curso.idCurso == Inscriptos.idCurso)
+        .outerjoin(sub_resp, sub_resp.c.idAlumno == Alumno.idAlumno)
+        .outerjoin(Responsable, Responsable.idResponsable == sub_resp.c.idResponsable)
+        .outerjoin(
+            Parentesco,
+            and_(
+                Parentesco.idAlumno == Alumno.idAlumno,
+                Parentesco.idResponsable == sub_resp.c.idResponsable,
+            ),
+        )
+        .where(Alumno.idAlumno == idAlumno)
+        .limit(1)
+    )
+
+    row = db.exec(stmt).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Alumno no encontrado o no inscripto a un curso")
+
+    alumno, curso, resp, parentesco = row
+
+    responsable_public = None
+    if resp:
+        responsable_public = ResponsableMiniPublic(
+            idResponsable=resp.idResponsable,
+            nombre=resp.nombre,
+            apellido=resp.apellido,
+            parentesco=parentesco,
+            nro_celular=getattr(resp, "nro_celular", None),
+        )
+
+    return AlumnoEscuelaDetallePublic(
+        idAlumno=alumno.idAlumno,
+        nombre=alumno.nombre,
+        apellido=alumno.apellido,
+        dni=alumno.dni,
+        estado=getattr(alumno, "estado", "Activo") or "Activo",
+        idCurso=curso.idCurso,
+        nombreCurso=f"{curso.nombre} {curso.division}".strip(),
+        responsable=responsable_public,
+    )
 
 
 def get_alumnos_by_curso(idCurso: int, db: SessionDep):

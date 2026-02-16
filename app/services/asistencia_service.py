@@ -15,6 +15,8 @@ from app.models.curso import Curso  # ✅ necesario para filtrar por CUE (escuel
 from app.services.curso_service import get_one_curso
 from app.schemas.asistencia import AsistenciaCreate
 
+from collections import defaultdict
+from datetime import timedelta
 
 # ==========================
 # Helpers
@@ -556,3 +558,106 @@ def stats_lluvia_comparativo(
         "lluvia": calc(True),
         "sinLluvia": calc(False),
     }
+def alertas_inasistencias_consecutivas(
+    db: SessionDep,
+    cue: str,
+    desde: date,
+    hasta: date,
+    min_consecutivas: int = 3,
+):
+    """
+    Devuelve alertas por rachas de AUSENTE consecutivas (>= min_consecutivas)
+    dentro del rango [desde, hasta], filtrando por escuela (Curso.CUE).
+    
+    ⚠️ Definición de "consecutivas":
+    - Se consideran consecutivas por FECHA CALENDARIO (diferencia de 1 día).
+    - Si querés que "finde no corte la racha", lo ajustamos (te lo dejo listo para cambiar).
+    """
+
+    # Traemos asistencias del rango para la escuela + datos del alumno y curso
+    stmt = (
+        select(
+            Asistencia.idAlumno,
+            Asistencia.idCurso,
+            Asistencia.fecha,
+            Asistencia.estado,
+            Alumno.nombre,
+            Alumno.apellido,
+            Alumno.dni, 
+            Curso.nombre.label("cursoNombre"),
+            Curso.division,
+            Curso.cicloLectivo,
+        )
+        .select_from(Asistencia, Curso, Alumno)
+        .where(
+            and_(
+                Curso.CUE == cue,
+                Asistencia.idCurso == Curso.idCurso,
+                Asistencia.idAlumno == Alumno.idAlumno,
+                Asistencia.fecha >= desde,
+                Asistencia.fecha <= hasta,
+            )
+        )
+        .order_by(Asistencia.idAlumno, Asistencia.idCurso, Asistencia.fecha)
+    )
+
+    rows = db.exec(stmt).all()
+
+    # Agrupar por alumno+curso
+    por_key = defaultdict(list)
+    for r in rows:
+        por_key[(r.idAlumno, r.idCurso)].append(r)
+
+    alertas = []
+
+    for (idAlumno, idCurso), items in por_key.items():
+        # Calcular rachas consecutivas de AUSENTE
+        streak = 0
+        best_streak = 0
+        best_end = None
+
+        prev_fecha = None
+
+        for it in items:
+            # si querés que fines de semana NO corten, cambiamos esta lógica
+            is_consecutive_day = (
+                prev_fecha is None or (it.fecha - prev_fecha) == timedelta(days=1)
+            )
+
+            if not is_consecutive_day:
+                streak = 0  # se corta por hueco de fechas
+
+            if it.estado == "Ausente":
+                streak += 1
+                if streak >= best_streak:
+                    best_streak = streak
+                    best_end = it.fecha
+            else:
+                # presente/tarde/otro corta la racha
+                streak = 0
+
+            prev_fecha = it.fecha
+
+        if best_streak >= min_consecutivas and best_end is not None:
+            # Tomamos info del último registro (tiene nombre/curso ya)
+            last = items[-1]
+            alumno_nombre = f"{last.apellido}, {last.nombre}"
+            curso_str = f"{last.cursoNombre} {last.division} ({last.cicloLectivo})"
+
+            alertas.append(
+                {
+                    "idAlumno": idAlumno,
+                    "idCurso": idCurso,
+                    "alumnoNombre": alumno_nombre,
+                    "dni": last.dni, 
+                    "curso": curso_str,
+                    "fechaFinRacha": str(best_end),
+                    "consecutivas": int(best_streak),
+                    "motivo": f"{best_streak} inasistencias consecutivas",
+                    "estado": "Pendiente",
+                }
+            )
+
+    # Orden: más graves primero, y más recientes arriba
+    alertas.sort(key=lambda x: (x["consecutivas"], x["fechaFinRacha"]), reverse=True)
+    return alertas
