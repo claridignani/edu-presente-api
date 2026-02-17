@@ -48,8 +48,12 @@ def create_curso_deprecated():
 
 
 @router.get("/por-escuela/{cue}", response_model=list[CursoPublic])
-def get_cursos_por_escuela(cue: str, session: SessionDep):
-    return get_cursos_by_cue(session, cue)
+def get_cursos_por_escuela(
+    cue: str,
+    session: SessionDep,
+    cicloLectivo: str | None = None
+):
+    return get_cursos_by_cue(session, cue, cicloLectivo)
 
 @router.post("/copiar-estructura", response_model=CopiarEstructuraCursosOut)
 def post_copiar_estructura(payload: CopiarEstructuraCursosIn, session: SessionDep):

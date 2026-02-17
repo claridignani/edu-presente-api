@@ -136,11 +136,11 @@ def get_cursos_by_usuario(db: SessionDep, idUsuario: int):
 
     return db.exec(stmt).all()
 
-
-def get_cursos_by_cue(db: SessionDep, cue: str):
+def get_cursos_by_cue(db: SessionDep, cue: str, cicloLectivo: str | None = None):
     stmt = select(Curso).where(Curso.CUE == cue)
+    if cicloLectivo:
+        stmt = stmt.where(Curso.cicloLectivo == cicloLectivo)
     return db.exec(stmt).all()
-
 
 # =========================
 # Crear curso (Director)
