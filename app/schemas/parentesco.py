@@ -1,4 +1,5 @@
 from datetime import date
+from typing import Optional
 from pydantic import Field
 from sqlmodel import SQLModel
 
@@ -22,7 +23,7 @@ class ResponsableConParentescoPublic(SQLModel):
     nombre: str
     apellido: str
     dni: str
-    fecha_nacimiento: date  
+    fecha_nacimiento: Optional[date] = None  
     email: str
     nro_celular: str
     direccion: str
