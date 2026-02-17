@@ -180,9 +180,9 @@ def get_alumno_detalle_por_id(
 ) -> AlumnoEscuelaDetallePublic:
     """
     Devuelve el detalle completo de 1 alumno (para el dialog de alertas):
-    - nombre, apellido, dni, estado
+    - nombre, apellido, dni, estado, direccion
     - curso actual (uno)
-    - responsable mini (uno)
+    - responsable mini (uno) con email y direccion
     """
 
     # subquery → 1 responsable por alumno (mismo criterio que por escuela)
@@ -196,7 +196,6 @@ def get_alumno_detalle_por_id(
         .subquery()
     )
 
-    # Traemos un curso vinculado por Inscriptos (si hay múltiples, tomamos 1)
     stmt = (
         select(
             Alumno,
@@ -233,6 +232,10 @@ def get_alumno_detalle_por_id(
             apellido=resp.apellido,
             parentesco=parentesco,
             nro_celular=getattr(resp, "nro_celular", None),
+
+            # ✅ NUEVO
+            email=getattr(resp, "email", None),
+            direccion=getattr(resp, "direccion", None),
         )
 
     return AlumnoEscuelaDetallePublic(
@@ -241,6 +244,10 @@ def get_alumno_detalle_por_id(
         apellido=alumno.apellido,
         dni=alumno.dni,
         estado=getattr(alumno, "estado", "Activo") or "Activo",
+
+        # ✅ NUEVO
+        direccion=getattr(alumno, "direccion", None),
+
         idCurso=curso.idCurso,
         nombreCurso=f"{curso.nombre} {curso.division}".strip(),
         responsable=responsable_public,

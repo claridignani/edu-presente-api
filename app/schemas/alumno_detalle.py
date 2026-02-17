@@ -9,6 +9,8 @@ class ResponsableMiniPublic(SQLModel):
     apellido: str
     parentesco: Optional[str] = None
     nro_celular: Optional[str] = None
+    email: Optional[str] = None
+    direccion: Optional[str] = None
 
 
 class AlumnoEscuelaDetallePublic(SQLModel):
@@ -17,8 +19,7 @@ class AlumnoEscuelaDetallePublic(SQLModel):
     apellido: str
     dni: str
     estado: str
-
-    # curso actual dentro de la escuela
+    direccion: Optional[str] = None
     idCurso: int
     nombreCurso: str
     responsable: Optional[ResponsableMiniPublic] = None

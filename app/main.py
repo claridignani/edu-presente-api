@@ -13,7 +13,7 @@ from app.routers import responsable
 from app.routers import parentesco
 from app.routers import invitacion_docente
 from app.routers.inscriptos_admin import router as inscriptos_admin_router
-
+from app.routers.alertas import router as alertas_router
 app = FastAPI()
 
 origins = [
@@ -39,5 +39,6 @@ app.include_router(responsable.router)
 app.include_router(parentesco.router)
 app.include_router(invitacion_docente.router)
 app.include_router(inscriptos_admin_router)
+app.include_router(alertas_router)
 
 

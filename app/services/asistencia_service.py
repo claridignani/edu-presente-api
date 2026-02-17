@@ -14,6 +14,7 @@ from app.models.alumno import Alumno
 from app.models.curso import Curso  # ✅ necesario para filtrar por CUE (escuela)
 from app.services.curso_service import get_one_curso
 from app.schemas.asistencia import AsistenciaCreate
+from app.services.alerta_service import check_y_crear_alertas_consecutivas_para_curso_fecha
 
 from collections import defaultdict
 from datetime import timedelta
@@ -82,6 +83,8 @@ def upsert_asistencia(db: SessionDep, payload: AsistenciaCreate) -> Asistencia:
     db.add(nueva)
     db.commit()
     db.refresh(nueva)
+    check_y_crear_alertas_consecutivas_para_curso_fecha(db=db, idCurso=nueva.idCurso, fecha=nueva.fecha, min_consecutivas=3)
+
     return nueva
 
 
@@ -122,7 +125,8 @@ def upsert_asistencias_bulk(db: SessionDep, payloads: list[AsistenciaCreate]) ->
     db.commit()
     for row in out:
         db.refresh(row)
-
+    any_row = out[0]
+    check_y_crear_alertas_consecutivas_para_curso_fecha(db=db, idCurso=any_row.idCurso, fecha=any_row.fecha, min_consecutivas=3)
     return out
 
 
