@@ -14,9 +14,11 @@ from app.models.asistencia import Asistencia
 from app.models.alumno import Alumno
 from app.models.curso import Curso
 from app.models.inscriptos import Inscriptos
-from app.models.intervencion import Intervencion
+from app.models.intervencion import Intervencion, EventoHistorial
 from app.schemas.alerta import AlertaListItem, AlertaPatch, AlertaCreate
 from app.schemas.intervencion import IntervencionCreate, IntervencionPublic
+from app.models.usuario import Usuario
+from app.models.rol import Rol
 
 
 # -----------------------------
@@ -28,7 +30,6 @@ def _tags_to_db(tags: list[str] | None) -> str | None:
     clean = [t.strip() for t in tags if t and t.strip()]
     if not clean:
         return None
-    # evita comas raras / espacios
     return ",".join(clean)[:200]
 
 
@@ -38,6 +39,40 @@ def _tags_from_db(tags: str | None) -> list[str] | None:
     parts = [p.strip() for p in tags.split(",")]
     out = [p for p in parts if p]
     return out or None
+
+
+# -----------------------------
+# ✅ Snapshot actor (nombre + rol) para auditoría
+# -----------------------------
+def _actor_snapshot(db: SessionDep, actor_id: int | None, cue: str) -> tuple[str | None, str | None]:
+    """
+    Devuelve (actor_nombre, actor_rol) para guardar snapshot.
+    actor_nombre: "Apellido, Nombre"
+    actor_rol: "Asistente" | "Director" | "Docente" | "Administrador"
+    """
+    if not actor_id:
+        return (None, None)
+
+    cue_norm = (cue or "").strip()
+
+    # Usuario
+    u = db.get(Usuario, int(actor_id))
+    actor_nombre = None
+    if u:
+        ape = (u.apellido or "").strip()
+        nom = (u.nombre or "").strip()
+        actor_nombre = f"{ape}, {nom}".strip(", ").strip() or None
+
+    # Rol por CUE
+    stmt = select(Rol).where(Rol.idUsuario == int(actor_id), Rol.CUE == cue_norm).limit(1)
+    r = db.exec(stmt).first()
+
+    actor_rol = None
+    if r:
+        desc = getattr(r, "descripcion", None)
+        actor_rol = desc.value if hasattr(desc, "value") else (str(desc) if desc else None)
+
+    return (actor_nombre, actor_rol)
 
 
 # -----------------------------
@@ -54,8 +89,8 @@ def _ultimas_fechas_clase(db: SessionDep, idCurso: int, hasta: date, n: int) -> 
     fechas = db.exec(stmt).all()
     return list(fechas)
 
+
 def list_intervenciones(db: SessionDep, idAlerta: int) -> list[IntervencionPublic]:
-    # valida alerta
     alerta = db.get(Alerta, idAlerta)
     if not alerta:
         raise HTTPException(status_code=404, detail="Alerta no encontrada")
@@ -71,13 +106,23 @@ def list_intervenciones(db: SessionDep, idAlerta: int) -> list[IntervencionPubli
         IntervencionPublic(
             idIntervencion=int(i.idIntervencion),
             idAlerta=int(i.idAlerta),
+            evento=i.evento,
             tipo=i.tipo,
             detalle=i.detalle,
             created_by=i.created_by,
+            actor_nombre=getattr(i, "actor_nombre", None),
+            actor_rol=getattr(i, "actor_rol", None),
+            estado_anterior=getattr(i, "estado_anterior", None),
+            estado_nuevo=getattr(i, "estado_nuevo", None),
+            archivada_anterior=getattr(i, "archivada_anterior", None),
+            archivada_nueva=getattr(i, "archivada_nueva", None),
+            detalleFormal=getattr(i, "detalleFormal", None),
+            tags=_tags_from_db(getattr(i, "tags", None)),
             created_at=i.created_at,
         )
         for i in items
     ]
+
 
 def _inscripcion_activa_para_fecha(db: SessionDep, idCurso: int, idAlumno: int, dia: date) -> Optional[Inscriptos]:
     stmt = (
@@ -114,6 +159,7 @@ def _ya_existe_alerta_activa(db: SessionDep, cue: str, idCurso: int, idAlumno: i
     )
     return db.exec(stmt).first() is not None
 
+
 def _ya_existe_alerta_activa_motivo(db: SessionDep, cue: str, idCurso: int, idAlumno: int, motivo: MotivoAlerta) -> bool:
     stmt = (
         select(Alerta.idAlerta)
@@ -130,6 +176,7 @@ def _ya_existe_alerta_activa_motivo(db: SessionDep, cue: str, idCurso: int, idAl
         .limit(1)
     )
     return db.exec(stmt).first() is not None
+
 
 # -----------------------------
 # ✅ Generación automática (enganchar desde upsert)
@@ -300,7 +347,14 @@ def patch_alerta(db: SessionDep, idAlerta: int, patch: AlertaPatch) -> Alerta:
 
     data = patch.model_dump(exclude_unset=True)
 
-    if "estado" in data and data["estado"] == EstadoAlerta.RESUELTO:
+    # ✅ sacamos actor_id del patch (no lo seteamos como atributo del modelo Alerta)
+    actor_id = data.pop("actor_id", None)
+
+    prev_estado = alerta.estado
+    prev_archivada = bool(alerta.archivada)
+
+    # aplicar cambios
+    if "estado" in data and data["estado"] == EstadoAlerta.RESUELTO and alerta.estado != EstadoAlerta.RESUELTO:
         alerta.resueltaAt = datetime.utcnow()
 
     for k, v in data.items():
@@ -309,6 +363,46 @@ def patch_alerta(db: SessionDep, idAlerta: int, patch: AlertaPatch) -> Alerta:
     db.add(alerta)
     db.commit()
     db.refresh(alerta)
+
+    # ✅ registrar eventos si hubo cambios
+    actor_nombre, actor_rol = _actor_snapshot(db, actor_id, alerta.cue)
+
+    # cambio de estado
+    if "estado" in data and prev_estado != alerta.estado:
+        ev = Intervencion(
+            idAlerta=idAlerta,
+            evento=EventoHistorial.CAMBIO_ESTADO,
+            tipo=None,
+            detalle=f"El estado de la alerta cambió de {prev_estado.value} a {alerta.estado.value}.",
+            created_by=actor_id,
+            actor_nombre=actor_nombre,
+            actor_rol=actor_rol,
+            estado_anterior=prev_estado,
+            estado_nuevo=alerta.estado,
+        )
+        db.add(ev)
+
+    # archivar / desarchivar
+    if "archivada" in data and prev_archivada != bool(alerta.archivada):
+        nuevo = bool(alerta.archivada)
+        ev = Intervencion(
+            idAlerta=idAlerta,
+            evento=EventoHistorial.ARCHIVADO if nuevo else EventoHistorial.DESARCHIVADO,
+            tipo=None,
+            detalle="Alerta archivada" if nuevo else "Alerta desarchivada",
+            created_by=actor_id,
+            actor_nombre=actor_nombre,
+            actor_rol=actor_rol,
+            archivada_anterior=prev_archivada,
+            archivada_nueva=nuevo,
+        )
+        db.add(ev)
+
+    if ("estado" in data and prev_estado != alerta.estado) or (
+        "archivada" in data and prev_archivada != bool(alerta.archivada)
+    ):
+        db.commit()
+
     return alerta
 
 
@@ -317,17 +411,23 @@ def add_intervencion(db: SessionDep, idAlerta: int, payload: IntervencionCreate)
     if not alerta:
         raise HTTPException(status_code=404, detail="Alerta no encontrada")
 
+    # ✅ snapshot del actor (nombre + rol) según el CUE de la alerta
+    actor_nombre, actor_rol = _actor_snapshot(db, payload.created_by, alerta.cue)
+
     inter = Intervencion(
         idAlerta=idAlerta,
+        evento=EventoHistorial.INTERVENCION,
         tipo=payload.tipo,
         detalle=payload.detalle,
         created_by=payload.created_by,
-        # opcional si ya lo sumaste al schema (si no, borrá estas 2 líneas)
+        actor_nombre=actor_nombre,
+        actor_rol=actor_rol,
         detalleFormal=getattr(payload, "detalleFormal", None),
-        tags=",".join(getattr(payload, "tags", []) or []) if getattr(payload, "tags", None) else None,
+        tags=_tags_to_db(getattr(payload, "tags", None)),
     )
     db.add(inter)
 
+    # ✅ actualizar metadata de la alerta
     alerta.ultimaAccionAt = datetime.utcnow()
     if alerta.estado == EstadoAlerta.PENDIENTE:
         alerta.estado = EstadoAlerta.EN_PROCESO
@@ -339,18 +439,25 @@ def add_intervencion(db: SessionDep, idAlerta: int, payload: IntervencionCreate)
     return IntervencionPublic(
         idIntervencion=int(inter.idIntervencion),
         idAlerta=int(inter.idAlerta),
+        evento=inter.evento,
         tipo=inter.tipo,
         detalle=inter.detalle,
         created_by=inter.created_by,
+        actor_nombre=inter.actor_nombre,
+        actor_rol=inter.actor_rol,
+        estado_anterior=getattr(inter, "estado_anterior", None),
+        estado_nuevo=getattr(inter, "estado_nuevo", None),
+        archivada_anterior=getattr(inter, "archivada_anterior", None),
+        archivada_nueva=getattr(inter, "archivada_nueva", None),
+        detalleFormal=getattr(inter, "detalleFormal", None),
+        tags=_tags_from_db(getattr(inter, "tags", None)),
         created_at=inter.created_at,
     )
+
+
 def create_alerta(db: SessionDep, payload: AlertaCreate) -> Alerta:
     """
     Crea una alerta manual desde el front (Asistente).
-    - valida curso y alumno
-    - valida que el curso pertenezca al CUE
-    - (opcional) valida inscripción activa del alumno en ese curso a la fecha de hoy
-    - evita duplicados activos por mismo motivo (no resueltas y no archivadas)
     """
     # 1) valida curso
     curso = db.get(Curso, payload.idCurso)
@@ -366,24 +473,16 @@ def create_alerta(db: SessionDep, payload: AlertaCreate) -> Alerta:
     if not alumno:
         raise HTTPException(status_code=404, detail="Alumno no encontrado")
 
-    # 4) valida inscripción activa (si querés que sea estricta)
     hoy = date.today()
     insc = _inscripcion_activa_para_fecha(db, payload.idCurso, payload.idAlumno, hoy)
 
     # ✅ Para alertas manuales NO bloqueamos.
-    # Si querés, lo dejamos como “soft validation” (log) y seguimos.
-    # Si preferís que bloquee solo para motivo INASISTENCIAS_CONSECUTIVAS, también se puede.
     if not insc:
-        # no raise
         pass
-
 
     # 5) evita duplicado activo por motivo
     if _ya_existe_alerta_activa_motivo(db, payload.cue, payload.idCurso, payload.idAlumno, payload.motivo):
-        raise HTTPException(
-            status_code=409,
-            detail="Ya existe una alerta activa para este alumno/curso/motivo",
-        )
+        raise HTTPException(status_code=409, detail="Ya existe una alerta activa para este alumno/curso/motivo")
 
     # 6) crea alerta
     alerta = Alerta(
@@ -393,7 +492,6 @@ def create_alerta(db: SessionDep, payload: AlertaCreate) -> Alerta:
         motivo=payload.motivo,
         estado=payload.estado,
         archivada=False,
-        # para alertas manuales, estas 3 quedan “neutras”
         consecutivas=payload.consecutivas or 0,
         fechaInicioRacha=payload.fechaInicioRacha or hoy,
         fechaFinRacha=payload.fechaFinRacha or hoy,
