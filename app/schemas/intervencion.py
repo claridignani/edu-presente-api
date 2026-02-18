@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional
 
 from sqlmodel import SQLModel
 
-from app.models.intervencion import TipoIntervencion
+from app.models.intervencion import TipoIntervencion, EventoHistorial
+from app.models.alerta import EstadoAlerta
 
 
 class IntervencionCreate(SQLModel):
@@ -14,7 +15,6 @@ class IntervencionCreate(SQLModel):
     detalle: str
     created_by: int | None = None
 
-    # opcionales (para persistir IA + chips)
     detalleFormal: str | None = None
     tags: list[str] | None = None
 
@@ -22,9 +22,24 @@ class IntervencionCreate(SQLModel):
 class IntervencionPublic(SQLModel):
     idIntervencion: int
     idAlerta: int
-    tipo: TipoIntervencion
+
+    # ✅ historial
+    evento: EventoHistorial
+
+    # si evento=INTERVENCION
+    tipo: TipoIntervencion | None = None
     detalle: str
+
+    # actor
     created_by: int | None = None
+    actor_nombre: str | None = None
+    actor_rol: str | None = None
+
+    # auditoría de cambios
+    estado_anterior: EstadoAlerta | None = None
+    estado_nuevo: EstadoAlerta | None = None
+    archivada_anterior: bool | None = None
+    archivada_nueva: bool | None = None
 
     detalleFormal: str | None = None
     tags: list[str] | None = None

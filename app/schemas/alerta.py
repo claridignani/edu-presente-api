@@ -33,9 +33,9 @@ class AlertaListItem(SQLModel):
 class AlertaPatch(SQLModel):
     estado: Optional[EstadoAlerta] = None
     archivada: Optional[bool] = None
-# ---------------------------------
-# ✅ Crear alerta manual (Asistente)
-# ---------------------------------
+    actor_id: Optional[int] = None
+
+
 class AlertaCreate(SQLModel):
     cue: str
 
@@ -44,12 +44,8 @@ class AlertaCreate(SQLModel):
 
     motivo: MotivoAlerta
     estado: EstadoAlerta
-
-    # opcionales (alerta manual)
     detalle: Optional[str] = None
     created_by: Optional[int] = None
-
-    # para mantener compatibilidad con modelo actual
     consecutivas: Optional[int] = 0
     fechaInicioRacha: Optional[date] = None
     fechaFinRacha: Optional[date] = None
