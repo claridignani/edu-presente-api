@@ -216,7 +216,8 @@ def get_alumno_detalle_por_id(
                 Parentesco.idResponsable == sub_resp.c.idResponsable,
             ),
         )
-        .where(Alumno.idAlumno == idAlumno)
+        .where(Inscriptos.activo == True) 
+        .order_by(desc(Inscriptos.fechaAlta), desc(Inscriptos.idInscripcion)) 
         .limit(1)
     )
 
@@ -258,7 +259,7 @@ def get_alumno_detalle_por_id(
 
 def get_alumnos_by_curso(idCurso: int, db: SessionDep):
     """
-    Devuelve los alumnos INSCRIPTOS a un curso (matrícula),
+    Devuelve los alumnos INSCRIPTOS ACTIVOS a un curso (matrícula actual),
     sin depender de que exista asistencia.
     """
     curso = get_one_curso(idCurso=idCurso, db=db)
@@ -268,7 +269,10 @@ def get_alumnos_by_curso(idCurso: int, db: SessionDep):
     stmt = (
         select(Alumno)
         .join(Inscriptos, Inscriptos.idAlumno == Alumno.idAlumno)
-        .where(Inscriptos.idCurso == idCurso)
+        .where(
+            Inscriptos.idCurso == idCurso,
+            Inscriptos.activo == True,  
+        )
     )
     return db.exec(stmt).all()
 

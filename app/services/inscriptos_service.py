@@ -12,7 +12,7 @@ from app.models.curso import Curso
 from app.models.movimiento_promocion import MovimientoPromocion
 from app.models.movimiento_promocion_item import MovimientoPromocionItem
 from app.schemas.inscriptos import EstadoInscripcion, AccionPromocion, InscripcionHistorialOut
-from app.schemas.movimientos import PromocionarOut, MovimientoOut, MovimientoDetalleOut, MovimientoItemOut
+from app.schemas.movimientos import PromocionarOut
 from app.services.curso_service import get_one_curso
 
 
@@ -51,6 +51,41 @@ def _cerrar_inscripcion(insc: Inscriptos, estado: EstadoInscripcion, fecha: date
     insc.estado = estado
     insc.fechaBaja = fecha
 
+
+def _fmt_curso(nombre: str | None, div: str | None, ciclo: str | None) -> str:
+    n = (nombre or "").strip()
+    d = (div or "").strip()
+    c = (ciclo or "").strip()
+    base = f"{n} {d}".strip()
+    return f"{base} ({c})".strip() if c else base or "—"
+
+
+def _buscar_destino_cambio_curso(
+    db: SessionDep,
+    idAlumno: int,
+    cicloLectivo: str,
+    fecha_desde: date,
+    idCurso_origen: int,
+):
+    """
+    Busca la 'siguiente' inscripción del alumno dentro del mismo ciclo,
+    posterior (o igual) a fecha_desde, que sea a otro curso.
+    """
+    stmt = (
+        select(Inscriptos, Curso)
+        .join(Curso, Curso.idCurso == Inscriptos.idCurso)
+        .where(
+            Inscriptos.idAlumno == idAlumno,
+            Curso.cicloLectivo == cicloLectivo,
+            Inscriptos.fechaAlta >= fecha_desde,
+            Inscriptos.idCurso != idCurso_origen,
+        )
+        .order_by(Inscriptos.fechaAlta.asc(), Inscriptos.idInscripcion.asc())
+        .limit(1)
+    )
+    return db.exec(stmt).first()
+
+
 # =========================
 # ✅ PROMOCIONAR + registrar movimiento
 # =========================
@@ -75,7 +110,6 @@ def promocionar_alumnos(
         raise HTTPException(status_code=422, detail="Falta director_id válido")
 
     try:
-        # 1) crear cabecera movimiento
         mov = MovimientoPromocion(
             cue=cue,
             director_id=int(director_id),
@@ -88,11 +122,9 @@ def promocionar_alumnos(
         db.commit()
         db.refresh(mov)
 
-        # 2) procesar alumnos y registrar ids de inscripciones
         for item in alumnos:
             _get_alumno_or_404(db, item.idAlumno)
 
-            # buscar inscripción activa en origen
             stmt = select(Inscriptos).where(
                 Inscriptos.idCurso == idCursoOrigen,
                 Inscriptos.idAlumno == item.idAlumno,
@@ -101,7 +133,6 @@ def promocionar_alumnos(
             insc_origen = db.exec(stmt).first()
             id_insc_origen = int(insc_origen.idInscripcion) if insc_origen else None
 
-            # cerrar origen según acción
             if insc_origen:
                 if item.accion == AccionPromocion.Promociona:
                     _cerrar_inscripcion(insc_origen, EstadoInscripcion.Promocionado, hoy)
@@ -114,7 +145,6 @@ def promocionar_alumnos(
 
                 db.add(insc_origen)
 
-            # crear destino solo si corresponde
             id_insc_destino = None
             if item.accion in (AccionPromocion.Promociona, AccionPromocion.Repite):
                 nueva = Inscriptos(
@@ -131,7 +161,6 @@ def promocionar_alumnos(
                 db.refresh(nueva)
                 id_insc_destino = int(nueva.idInscripcion)
 
-            # registrar item del movimiento
             it = MovimientoPromocionItem(
                 idMovimiento=int(mov.idMovimiento),
                 idAlumno=int(item.idAlumno),
@@ -152,7 +181,7 @@ def promocionar_alumnos(
 
 
 # =========================
-# ✅ Listar últimos movimientos por CUE
+# ✅ Listar últimos movimientos por CUE (actas)
 # =========================
 def listar_movimientos_por_cue(db: SessionDep, cue: str, limit: int = 20) -> list[dict]:
     from sqlalchemy.orm import aliased
@@ -175,9 +204,9 @@ def listar_movimientos_por_cue(db: SessionDep, cue: str, limit: int = 20) -> lis
         .order_by(desc(MovimientoPromocion.created_at))
         .limit(limit)
     )
-    
+
     results = db.exec(stmt).all()
-    
+
     movimientos = []
     for row in results:
         m = row.MovimientoPromocion
@@ -194,8 +223,9 @@ def listar_movimientos_por_cue(db: SessionDep, cue: str, limit: int = 20) -> lis
         })
     return movimientos
 
+
 # =========================
-# ✅ Detalle movimiento 
+# ✅ Detalle movimiento
 # =========================
 def detalle_movimiento(db: SessionDep, idMovimiento: int) -> dict:
     mov = db.get(MovimientoPromocion, idMovimiento)
@@ -221,7 +251,7 @@ def detalle_movimiento(db: SessionDep, idMovimiento: int) -> dict:
         "items": [
             {
                 "idItem": item.MovimientoPromocionItem.idItem,
-                "idAlumno": item.Alumno.idAlumno,  
+                "idAlumno": item.Alumno.idAlumno,
                 "alumno": f"{item.Alumno.apellido}, {item.Alumno.nombre}",
                 "dni": item.Alumno.dni,
                 "accion": item.MovimientoPromocionItem.accion
@@ -229,6 +259,7 @@ def detalle_movimiento(db: SessionDep, idMovimiento: int) -> dict:
             for item in results
         ]
     }
+
 
 # =========================
 # ✅ Deshacer (DELETE destino + reabrir origen)
@@ -247,13 +278,11 @@ def deshacer_movimiento(db: SessionDep, idMovimiento: int):
 
     try:
         for it in items:
-            # 1) borrar insc destino si existe
             if it.idInscripcionDestino:
                 insc_dest = db.get(Inscriptos, it.idInscripcionDestino)
                 if insc_dest:
                     db.delete(insc_dest)
 
-            # 2) reabrir origen si existe
             if it.idInscripcionOrigen:
                 insc_org = db.get(Inscriptos, it.idInscripcionOrigen)
                 if insc_org:
@@ -272,8 +301,9 @@ def deshacer_movimiento(db: SessionDep, idMovimiento: int):
         db.rollback()
         raise
 
+
 # =========================
-# INSCRIBIR (con regla 1-activa)
+# INSCRIBIR (con regla 1-activa por ciclo)
 # =========================
 def inscribir_alumno(idCurso: int, idAlumno: int, db: SessionDep, fechaAlta: date | None = None):
     curso = _get_curso_or_404(db, idCurso)
@@ -281,7 +311,6 @@ def inscribir_alumno(idCurso: int, idAlumno: int, db: SessionDep, fechaAlta: dat
 
     hoy = fechaAlta or date.today()
 
-    # si ya está activo en ESTE curso -> error
     stmt_mismo = select(Inscriptos).where(
         Inscriptos.idCurso == idCurso,
         Inscriptos.idAlumno == idAlumno,
@@ -290,7 +319,6 @@ def inscribir_alumno(idCurso: int, idAlumno: int, db: SessionDep, fechaAlta: dat
     if db.exec(stmt_mismo).first():
         raise HTTPException(status_code=400, detail="El alumno ya está inscripto y activo en este curso")
 
-    # si está activo en otro curso del MISMO ciclo -> cerrar como cambio
     activa = _get_inscripcion_activa_en_ciclo(db, idAlumno, curso.cicloLectivo)
     if activa and activa.idCurso != idCurso:
         _cerrar_inscripcion(activa, EstadoInscripcion.CambioCurso, hoy)
@@ -347,13 +375,17 @@ def get_inscriptos_by_curso(idCurso: int, db: SessionDep, solo_activos: bool = T
 
     return db.exec(stmt).all()
 
+
+# =========================
+# ✅ TIMELINE: Movimientos + Cambios de curso (desde Inscriptos)
+# =========================
 def get_timeline_alumno(db: SessionDep, id_alumno: int) -> list[dict]:
     from sqlalchemy.orm import aliased
-    # Alias para unir los nombres de cursos origen y destino
     CursoOrigen = aliased(Curso)
     CursoDestino = aliased(Curso)
 
-    stmt = (
+    # 1) movimientos "oficiales"
+    stmt_mov = (
         select(
             MovimientoPromocion.fecha,
             MovimientoPromocionItem.accion,
@@ -369,89 +401,167 @@ def get_timeline_alumno(db: SessionDep, id_alumno: int) -> list[dict]:
         .outerjoin(CursoDestino, CursoDestino.idCurso == MovimientoPromocionItem.idCursoDestino)
         .where(MovimientoPromocionItem.idAlumno == id_alumno)
         .where(MovimientoPromocion.estado == "Activo")
-        .order_by(desc(MovimientoPromocion.fecha))
     )
-    
-    results = db.exec(stmt).all()
-    
-    timeline = []
-    for r in results:
-        # Formateamos el detalle según si hubo curso de destino o no
-        detalle_curso = f"De {r.orig_nombre} {r.orig_div} ({r.orig_ciclo})"
+    movs = db.exec(stmt_mov).all()
+
+    timeline: list[dict] = []
+    for r in movs:
+        detalle = f"De {_fmt_curso(r.orig_nombre, r.orig_div, r.orig_ciclo)}"
         if r.dest_nombre:
-            detalle_curso += f" a {r.dest_nombre} {r.dest_div} ({r.dest_ciclo})"
-            
+            detalle += f" a {_fmt_curso(r.dest_nombre, r.dest_div, r.dest_ciclo)}"
+        timeline.append({"fecha": r.fecha, "accion": r.accion, "detalle": detalle})
+
+    # 2) cambios de curso (detectados por inscriptos)
+    stmt_cc = (
+        select(Inscriptos, Curso)
+        .join(Curso, Curso.idCurso == Inscriptos.idCurso)
+        .where(
+            Inscriptos.idAlumno == id_alumno,
+            Inscriptos.estado == EstadoInscripcion.CambioCurso,
+            Inscriptos.fechaBaja.is_not(None),
+        )
+        .order_by(desc(Inscriptos.fechaBaja))
+    )
+    cambios = db.exec(stmt_cc).all()
+
+    for insc_origen, curso_origen in cambios:
+        destino = _buscar_destino_cambio_curso(
+            db=db,
+            idAlumno=id_alumno,
+            cicloLectivo=str(curso_origen.cicloLectivo),
+            fecha_desde=insc_origen.fechaBaja,
+            idCurso_origen=int(insc_origen.idCurso),
+        )
+
+        dest_text = "—"
+        if destino:
+            insc_dest, curso_dest = destino
+            dest_text = _fmt_curso(curso_dest.nombre, curso_dest.division, curso_dest.cicloLectivo)
+
+        detalle = f"De {_fmt_curso(curso_origen.nombre, curso_origen.division, curso_origen.cicloLectivo)} a {dest_text}"
         timeline.append({
-            "fecha": r.fecha,
-            "accion": r.accion,
-            "detalle": detalle_curso
+            "fecha": insc_origen.fechaBaja,
+            "accion": "CambioCurso",
+            "detalle": detalle
         })
+
+    # 3) ordenar final por fecha desc
+    timeline.sort(key=lambda x: x["fecha"], reverse=True)
     return timeline
 
+
+# =========================
+# ✅ AUDITORÍA: Movimientos + Cambios de curso (desde Inscriptos)
+# =========================
 def get_auditoria_alumnos_detalle(
-    db: SessionDep, 
-    cue: str, 
-    anio: str = None, 
+    db: SessionDep,
+    cue: str,
+    anio: str = None,
     accion: str = None
 ) -> list[dict]:
     from sqlalchemy.orm import aliased
-    from app.models.alumno import Alumno
-    from app.models.curso import Curso
 
-    # Alias para los cursos para saber de dónde viene y a dónde va
     CursoOrigen = aliased(Curso)
     CursoDestino = aliased(Curso)
 
-    # La consulta une: Item -> Cabecera -> Alumno -> Cursos
-    stmt = (
-        select(
-            MovimientoPromocion.fecha,
-            MovimientoPromocion.idMovimiento,
-            MovimientoPromocionItem.accion,
-            Alumno.apellido,
-            Alumno.nombre,
-            Alumno.dni,
-            Alumno.idAlumno,
-            CursoOrigen.nombre.label("orig_nombre"),
-            CursoOrigen.division.label("orig_div"),
-            CursoDestino.nombre.label("dest_nombre"),
-            CursoDestino.division.label("dest_div")
+    auditoria: list[dict] = []
+
+    # 1) Movimientos (Promociona/Repite/Egresa/Baja)
+    if accion is None or accion != "CambioCurso":
+        stmt = (
+            select(
+                MovimientoPromocion.fecha,
+                MovimientoPromocion.idMovimiento,
+                MovimientoPromocionItem.accion,
+                Alumno.apellido,
+                Alumno.nombre,
+                Alumno.dni,
+                Alumno.idAlumno,
+                CursoOrigen.nombre.label("orig_nombre"),
+                CursoOrigen.division.label("orig_div"),
+                CursoDestino.nombre.label("dest_nombre"),
+                CursoDestino.division.label("dest_div")
+            )
+            .join(MovimientoPromocion, MovimientoPromocion.idMovimiento == MovimientoPromocionItem.idMovimiento)
+            .join(Alumno, Alumno.idAlumno == MovimientoPromocionItem.idAlumno)
+            .join(CursoOrigen, CursoOrigen.idCurso == MovimientoPromocionItem.idCursoOrigen)
+            .outerjoin(CursoDestino, CursoDestino.idCurso == MovimientoPromocionItem.idCursoDestino)
+            .where(MovimientoPromocion.cue == cue)
+            .where(MovimientoPromocion.estado == "Activo")
         )
-        .join(MovimientoPromocion, MovimientoPromocion.idMovimiento == MovimientoPromocionItem.idMovimiento)
-        .join(Alumno, Alumno.idAlumno == MovimientoPromocionItem.idAlumno)
-        .join(CursoOrigen, CursoOrigen.idCurso == MovimientoPromocionItem.idCursoOrigen)
-        .outerjoin(CursoDestino, CursoDestino.idCurso == MovimientoPromocionItem.idCursoDestino)
-        .where(MovimientoPromocion.cue == cue)
-        .where(MovimientoPromocion.estado == "Activo")
-    )
 
-    # Aplicamos filtros si vienen en la URL
-    if anio:
-        stmt = stmt.where(func.year(MovimientoPromocion.fecha) == int(anio))
-    
-    if accion:
-        stmt = stmt.where(MovimientoPromocionItem.accion == accion)
+        if anio:
+            stmt = stmt.where(func.year(MovimientoPromocion.fecha) == int(anio))
+        if accion:
+            stmt = stmt.where(MovimientoPromocionItem.accion == accion)
 
-    stmt = stmt.order_by(desc(MovimientoPromocion.fecha))
-    
-    results = db.exec(stmt).all()
-    
-    auditoria = []
-    for r in results:
-        auditoria.append({
-            "idMovimiento": r.idMovimiento,
-            "fecha": r.fecha,
-            "idAlumno": r.idAlumno,
-            "alumno": f"{r.apellido}, {r.nombre}",
-            "dni": r.dni,
-            "accion": r.accion,
-            "cursoOrigen": f"{r.orig_nombre} {r.orig_div}",
-            "cursoDestino": f"{r.dest_nombre} {r.dest_div}" if r.dest_nombre else "—"
-        })
+        stmt = stmt.order_by(desc(MovimientoPromocion.fecha))
+        results = db.exec(stmt).all()
+
+        for r in results:
+            auditoria.append({
+                "idMovimiento": r.idMovimiento,
+                "fecha": r.fecha,
+                "idAlumno": r.idAlumno,
+                "alumno": f"{r.apellido}, {r.nombre}",
+                "dni": r.dni,
+                "accion": r.accion,
+                "cursoOrigen": f"{r.orig_nombre} {r.orig_div}",
+                "cursoDestino": f"{r.dest_nombre} {r.dest_div}" if r.dest_nombre else "—"
+            })
+
+    # 2) Cambios de curso (desde inscriptos)
+    if accion is None or accion == "CambioCurso":
+        stmt_cc = (
+            select(Inscriptos, Alumno, Curso)
+            .join(Alumno, Alumno.idAlumno == Inscriptos.idAlumno)
+            .join(Curso, Curso.idCurso == Inscriptos.idCurso)
+            .where(
+                Curso.CUE == cue,
+                Inscriptos.estado == EstadoInscripcion.CambioCurso,
+                Inscriptos.fechaBaja.is_not(None),
+            )
+            .order_by(desc(Inscriptos.fechaBaja))
+        )
+
+        if anio:
+            stmt_cc = stmt_cc.where(func.year(Inscriptos.fechaBaja) == int(anio))
+
+        rows = db.exec(stmt_cc).all()
+        for insc_origen, alumno, curso_origen in rows:
+            destino = _buscar_destino_cambio_curso(
+                db=db,
+                idAlumno=int(alumno.idAlumno),
+                cicloLectivo=str(curso_origen.cicloLectivo),
+                fecha_desde=insc_origen.fechaBaja,
+                idCurso_origen=int(insc_origen.idCurso),
+            )
+
+            dest_txt = "—"
+            if destino:
+                _, curso_dest = destino
+                dest_txt = f"{curso_dest.nombre} {curso_dest.division}"
+
+            auditoria.append({
+                "idMovimiento": None,  # no es un acta
+                "fecha": insc_origen.fechaBaja,
+                "idAlumno": int(alumno.idAlumno),
+                "alumno": f"{alumno.apellido}, {alumno.nombre}",
+                "dni": alumno.dni,
+                "accion": "CambioCurso",
+                "cursoOrigen": f"{curso_origen.nombre} {curso_origen.division}",
+                "cursoDestino": dest_txt
+            })
+
+    # orden final por fecha desc
+    auditoria.sort(key=lambda x: x["fecha"], reverse=True)
     return auditoria
 
+
+# =========================
+# HISTORIAL INSCRIPCIONES (sin duplicado)
+# =========================
 def get_historial_inscripciones_alumno(db: SessionDep, idAlumno: int) -> list[InscripcionHistorialOut]:
-    # valida alumno existe
     _get_alumno_or_404(db, idAlumno)
 
     stmt = (

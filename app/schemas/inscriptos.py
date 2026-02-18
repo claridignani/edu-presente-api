@@ -73,3 +73,14 @@ class InscripcionHistorialOut(BaseModel):
     fechaBaja: Optional[date] = None
     activo: bool
     estado: EstadoInscripcion
+
+class InscripcionHistorialOut(BaseModel):
+    idInscripcion: int
+    idCurso: int
+    cicloLectivo: str
+    cursoNombre: str
+    cursoDivision: str
+    fechaAlta: date
+    fechaBaja: Optional[date] = None
+    activo: bool
+    estado: EstadoInscripcion

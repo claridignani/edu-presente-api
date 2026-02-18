@@ -1,8 +1,19 @@
 from fastapi import APIRouter
 from app.dependencies import SessionDep
+
 from app.schemas.alumno import AlumnoPublic
-from app.schemas.inscriptos import InscriptosCreate, InscriptosPublic, PromocionarRequest, InscripcionHistorialOut
-from app.schemas.movimientos import PromocionarOut, MovimientoOut, MovimientoDetalleOut, MovimientoHistorialOut
+from app.schemas.inscriptos import (
+    InscriptosCreate,
+    InscriptosPublic,
+    PromocionarRequest,
+    InscripcionHistorialOut,
+)
+from app.schemas.movimientos import (
+    PromocionarOut,
+    MovimientoDetalleOut,
+    MovimientoHistorialOut,
+)
+
 from app.services import inscriptos_service
 from app.services.inscriptos_service import (
     inscribir_alumno,
@@ -49,20 +60,22 @@ def promocionar(payload: PromocionarRequest, session: SessionDep):
         director_id=payload.director_id,
     )
 
+
 # últimos movimientos por CUE
-@router.get("/movimientos", response_model=list[MovimientoHistorialOut]) 
+@router.get("/movimientos", response_model=list[MovimientoHistorialOut])
 def listar_movimientos(cue: str, session: SessionDep, limit: int = 20):
     return listar_movimientos_por_cue(db=session, cue=cue, limit=limit)
+
 
 @router.get("/movimientos/{idMovimiento}", response_model=MovimientoDetalleOut)
 def obtener_detalle(idMovimiento: int, session: SessionDep):
     return detalle_movimiento(db=session, idMovimiento=idMovimiento)
 
 
-# deshacer (DELETE)
 @router.post("/movimientos/{idMovimiento}/deshacer")
 def movimiento_deshacer(idMovimiento: int, session: SessionDep):
     return deshacer_movimiento(db=session, idMovimiento=idMovimiento)
+
 
 @router.get("/alumno/{id_alumno}/timeline")
 def leer_timeline_alumno(id_alumno: int, db: SessionDep):
@@ -71,20 +84,16 @@ def leer_timeline_alumno(id_alumno: int, db: SessionDep):
     """
     return inscriptos_service.get_timeline_alumno(db=db, id_alumno=id_alumno)
 
+
 @router.get("/auditoria-alumnos")
-def listar_auditoria_alumnos(
-    cue: str, 
-    session: SessionDep, 
-    anio: str = None, 
-    accion: str = None
-):
+def listar_auditoria_alumnos(cue: str, session: SessionDep, anio: str = None, accion: str = None):
     """
-    Retorna una lista plana de alumnos y sus movimientos para auditoría global.
-    Permite filtrar por año y tipo de acción (Promociona, Repite, etc).
+    Lista plana para auditoría global (movimientos promocionar).
     """
     return inscriptos_service.get_auditoria_alumnos_detalle(
         db=session, cue=cue, anio=anio, accion=accion
     )
+
 
 @router.get("/alumno/{idAlumno}/historial", response_model=list[InscripcionHistorialOut])
 def historial_inscripciones_alumno(idAlumno: int, session: SessionDep):
