@@ -60,7 +60,6 @@ def get_alumnos_detalle_by_curso(idCurso: int, db: SessionDep):
         .outerjoin(Parentesco, Parentesco.idAlumno == Alumno.idAlumno)
         .outerjoin(Responsable, Responsable.idResponsable == Parentesco.idResponsable)
         .where(Inscriptos.idCurso == idCurso)
-        .where(Inscriptos.activo == True)
     )
 
     rows = db.exec(stmt).all()
@@ -142,7 +141,6 @@ def get_alumnos_detalle_por_escuela(
         )
         .where(Curso.CUE == cue)
         .where(Curso.cicloLectivo == ciclo_lectivo)
-        .where(Inscriptos.activo == True)
     )
 
     rows = db.exec(stmt).all()
