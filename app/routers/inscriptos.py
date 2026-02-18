@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 from app.dependencies import SessionDep
 from app.schemas.alumno import AlumnoPublic
-from app.schemas.inscriptos import InscriptosCreate, InscriptosPublic, PromocionarRequest
+from app.schemas.inscriptos import InscriptosCreate, InscriptosPublic, PromocionarRequest, InscripcionHistorialOut
 from app.schemas.movimientos import PromocionarOut, MovimientoOut, MovimientoDetalleOut, MovimientoHistorialOut
 from app.services import inscriptos_service
 from app.services.inscriptos_service import (
@@ -12,6 +12,7 @@ from app.services.inscriptos_service import (
     listar_movimientos_por_cue,
     detalle_movimiento,
     deshacer_movimiento,
+    get_historial_inscripciones_alumno,
 )
 
 router = APIRouter(prefix="/inscriptos", tags=["Inscriptos"])
@@ -84,3 +85,7 @@ def listar_auditoria_alumnos(
     return inscriptos_service.get_auditoria_alumnos_detalle(
         db=session, cue=cue, anio=anio, accion=accion
     )
+
+@router.get("/alumno/{idAlumno}/historial", response_model=list[InscripcionHistorialOut])
+def historial_inscripciones_alumno(idAlumno: int, session: SessionDep):
+    return get_historial_inscripciones_alumno(db=session, idAlumno=idAlumno)

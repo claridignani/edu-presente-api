@@ -11,7 +11,7 @@ from app.models.alumno import Alumno
 from app.models.curso import Curso
 from app.models.movimiento_promocion import MovimientoPromocion
 from app.models.movimiento_promocion_item import MovimientoPromocionItem
-from app.schemas.inscriptos import EstadoInscripcion, AccionPromocion
+from app.schemas.inscriptos import EstadoInscripcion, AccionPromocion, InscripcionHistorialOut
 from app.schemas.movimientos import PromocionarOut, MovimientoOut, MovimientoDetalleOut, MovimientoItemOut
 from app.services.curso_service import get_one_curso
 
@@ -449,3 +449,33 @@ def get_auditoria_alumnos_detalle(
             "cursoDestino": f"{r.dest_nombre} {r.dest_div}" if r.dest_nombre else "—"
         })
     return auditoria
+
+def get_historial_inscripciones_alumno(db: SessionDep, idAlumno: int) -> list[InscripcionHistorialOut]:
+    # valida alumno existe
+    _get_alumno_or_404(db, idAlumno)
+
+    stmt = (
+        select(Inscriptos, Curso)
+        .join(Curso, Curso.idCurso == Inscriptos.idCurso)
+        .where(Inscriptos.idAlumno == idAlumno)
+        .order_by(desc(Inscriptos.fechaAlta), desc(Inscriptos.idInscripcion))
+    )
+
+    rows = db.exec(stmt).all()
+
+    out: list[InscripcionHistorialOut] = []
+    for insc, curso in rows:
+        out.append(
+            InscripcionHistorialOut(
+                idInscripcion=int(insc.idInscripcion),
+                idCurso=int(insc.idCurso),
+                cicloLectivo=str(curso.cicloLectivo),
+                cursoNombre=str(curso.nombre),
+                cursoDivision=str(curso.division),
+                fechaAlta=insc.fechaAlta,
+                fechaBaja=insc.fechaBaja,
+                activo=bool(insc.activo),
+                estado=insc.estado,
+            )
+        )
+    return out

@@ -1,5 +1,6 @@
 from __future__ import annotations
-
+from pydantic import BaseModel
+from typing import Optional
 from datetime import date
 from enum import Enum
 from sqlmodel import SQLModel, Field
@@ -62,3 +63,13 @@ class PromocionarRequest(SQLModel):
     alumnos: list[PromocionItem]
     fecha: date | None = None
 
+class InscripcionHistorialOut(BaseModel):
+    idInscripcion: int
+    idCurso: int
+    cicloLectivo: str
+    cursoNombre: str
+    cursoDivision: str
+    fechaAlta: date
+    fechaBaja: Optional[date] = None
+    activo: bool
+    estado: EstadoInscripcion
