@@ -7,7 +7,7 @@ import re
 router = APIRouter(prefix="/ia", tags=["ia"])
 
 # Configuración
-GEMINI_API_KEY = "AIzaSyB-J22XcgVM2T2_GC2z3FXbmQoe3EtaG4E"
+GEMINI_API_KEY = "AIzaSyAofoArFLBEhLqh6JGg1FvIsXnjnPeu-0g"
 # Usamos el modelo 'gemini-pro' que es el más estable para API Keys de AI Studio
 url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={GEMINI_API_KEY}"
 
