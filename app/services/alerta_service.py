@@ -247,11 +247,123 @@ def check_y_crear_alertas_consecutivas_para_curso_fecha(
                 fechaInicioRacha=ult_fechas_sorted[0],
                 fechaFinRacha=ult_fechas_sorted[-1],
                 archivada=False,
+                
             )
+            now = datetime.utcnow()
+            alerta.created_at = now
+            alerta.ultimaAccionAt = now
+
             db.add(alerta)
 
     db.commit()
 
+def check_y_crear_alertas_tardanzas_para_curso_fecha(
+    db: SessionDep,
+    idCurso: int,
+    fecha: date,
+    umbral: int = 3,  # "más de 3" => dispara en 4
+):
+    """
+    Crea alerta automática por LLEGADAS_TARDE cuando un alumno acumula
+    más de 'umbral' tardanzas dentro del ciclo lectivo del curso (o año de la fecha).
+    Se dispara mirando los alumnos que HOY tuvieron estado == "Tarde".
+    """
+    curso = db.get(Curso, idCurso)
+    if not curso:
+        return
+
+    cue = curso.CUE
+
+    # Tomamos el año/ciclo lectivo del curso si existe (tu modelo Curso lo tiene),
+    # sino usamos el año de la fecha.
+    anio = getattr(curso, "cicloLectivo", None) or fecha.year
+    desde = date(int(anio), 1, 1)
+    hasta = date(int(anio), 12, 31)
+
+    # Alumnos que llegaron tarde en esta fecha (candidatos)
+    stmt_tarde_hoy = (
+        select(Asistencia.idAlumno)
+        .where(
+            and_(
+                Asistencia.idCurso == idCurso,
+                Asistencia.fecha == fecha,
+                Asistencia.estado == "Tarde",
+            )
+        )
+    )
+    candidatos = [int(x) for x in db.exec(stmt_tarde_hoy).all()]
+    if not candidatos:
+        return
+
+    for idAlumno in candidatos:
+        # Debe estar inscripto/activo ese día
+        insc = _inscripcion_activa_para_fecha(db, idCurso, idAlumno, fecha)
+        if not insc:
+            continue
+
+        # Evitar duplicado activo por este motivo
+        if _ya_existe_alerta_activa_motivo(db, cue, idCurso, idAlumno, MotivoAlerta.LLEGADAS_TARDE):
+            continue
+
+        # Contar tardanzas en el ciclo/año
+        stmt_cnt = (
+            select(func.count())
+            .select_from(Asistencia)
+            .where(
+                and_(
+                    Asistencia.idCurso == idCurso,
+                    Asistencia.idAlumno == idAlumno,
+                    Asistencia.fecha >= desde,
+                    Asistencia.fecha <= hasta,
+                    Asistencia.estado == "Tarde",
+                )
+            )
+        )
+        cnt_row = db.exec(stmt_cnt).one()
+        cnt = int(cnt_row or 0)
+
+        # "más de 3" => cnt >= 4
+        if cnt <= umbral:
+            continue
+
+        # Fecha primera y última tardanza del período
+        stmt_minmax = (
+            select(
+                func.min(Asistencia.fecha).label("minf"),
+                func.max(Asistencia.fecha).label("maxf"),
+            )
+            .where(
+                and_(
+                    Asistencia.idCurso == idCurso,
+                    Asistencia.idAlumno == idAlumno,
+                    Asistencia.fecha >= desde,
+                    Asistencia.fecha <= hasta,
+                    Asistencia.estado == "Tarde",
+                )
+            )
+        )
+        r = db.exec(stmt_minmax).one()
+        fecha_ini = r.minf or fecha
+        fecha_fin = r.maxf or fecha
+
+        alerta = Alerta(
+            cue=cue,
+            idCurso=idCurso,
+            idAlumno=idAlumno,
+            motivo=MotivoAlerta.LLEGADAS_TARDE,
+            estado=EstadoAlerta.PENDIENTE,
+            consecutivas=cnt,               # reutilizamos el campo como "cantidad"
+            fechaInicioRacha=fecha_ini,     # primera tardanza del período
+            fechaFinRacha=fecha_fin,        # última tardanza del período
+            archivada=False,
+        )
+        now = datetime.utcnow()
+        alerta.created_at = now
+        alerta.ultimaAccionAt = now
+
+        db.add(alerta)
+
+    db.commit()
 
 # -----------------------------
 # ✅ Listado para la grilla (Asistente)
@@ -284,7 +396,7 @@ def list_alertas(
                 Alerta.idCurso == Curso.idCurso,
             )
         )
-        .order_by(desc(Alerta.fechaFinRacha), desc(Alerta.idAlerta))
+        .order_by(desc(Alerta.created_at), desc(Alerta.idAlerta))
     )
 
     if archivadas is False:
@@ -327,6 +439,7 @@ def list_alertas(
                 alumnoNombre=f"{ape}, {nom}",
                 alumnoDni=dni,
                 idCurso=int(alerta.idCurso),
+                created_at=alerta.created_at,
                 curso=curso_str,
                 motivo=alerta.motivo,
                 consecutivas=int(alerta.consecutivas),
@@ -360,15 +473,19 @@ def patch_alerta(db: SessionDep, idAlerta: int, patch: AlertaPatch) -> Alerta:
     for k, v in data.items():
         setattr(alerta, k, v)
 
+    # ✅ persistimos cambios base
     db.add(alerta)
     db.commit()
     db.refresh(alerta)
 
-    # ✅ registrar eventos si hubo cambios
+    # ✅ registrar eventos si hubo cambios (auditoría)
     actor_nombre, actor_rol = _actor_snapshot(db, actor_id, alerta.cue)
+
+    hubo_cambio = False
 
     # cambio de estado
     if "estado" in data and prev_estado != alerta.estado:
+        hubo_cambio = True
         ev = Intervencion(
             idAlerta=idAlerta,
             evento=EventoHistorial.CAMBIO_ESTADO,
@@ -384,6 +501,7 @@ def patch_alerta(db: SessionDep, idAlerta: int, patch: AlertaPatch) -> Alerta:
 
     # archivar / desarchivar
     if "archivada" in data and prev_archivada != bool(alerta.archivada):
+        hubo_cambio = True
         nuevo = bool(alerta.archivada)
         ev = Intervencion(
             idAlerta=idAlerta,
@@ -398,13 +516,14 @@ def patch_alerta(db: SessionDep, idAlerta: int, patch: AlertaPatch) -> Alerta:
         )
         db.add(ev)
 
-    if ("estado" in data and prev_estado != alerta.estado) or (
-        "archivada" in data and prev_archivada != bool(alerta.archivada)
-    ):
+    # ✅ si hubo cambios "reales", actualizamos ultimaAccionAt y comiteamos eventos + timestamp
+    if hubo_cambio:
+        alerta.ultimaAccionAt = datetime.utcnow()
+        db.add(alerta)
         db.commit()
+        db.refresh(alerta)
 
     return alerta
-
 
 def add_intervencion(db: SessionDep, idAlerta: int, payload: IntervencionCreate) -> IntervencionPublic:
     alerta = db.get(Alerta, idAlerta)
@@ -504,6 +623,10 @@ def create_alerta(db: SessionDep, payload: AlertaCreate) -> Alerta:
     # created_by si existe en modelo
     if hasattr(alerta, "created_by"):
         setattr(alerta, "created_by", payload.created_by)
+        
+    now = datetime.utcnow()
+    alerta.created_at = now
+    alerta.ultimaAccionAt = now
 
     db.add(alerta)
     db.commit()

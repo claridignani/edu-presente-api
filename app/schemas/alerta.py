@@ -22,12 +22,15 @@ class AlertaListItem(SQLModel):
     motivo: MotivoAlerta
     consecutivas: int
 
+    created_at: datetime
+
     fechaFinRacha: date
     fechaInicioRacha: date
 
     estado: EstadoAlerta
     ultimaAccionAt: datetime | None = None
     archivada: bool = False
+
 
 
 class AlertaPatch(SQLModel):

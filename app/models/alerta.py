@@ -40,7 +40,7 @@ class Alerta(SQLModel, table=True):
 
     idCurso: int = Field(foreign_key="curso.idCurso", index=True, nullable=False)
     idAlumno: int = Field(foreign_key="alumno.idAlumno", index=True, nullable=False)
-
+    created_at: datetime = Field(default_factory=datetime.utcnow, nullable=False)
     motivo: MotivoAlerta = Field(
         sa_column=Column(
             SAEnum(
