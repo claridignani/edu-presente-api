@@ -6,6 +6,7 @@ from app.schemas.alumno import AlumnoPublic, AlumnoCreate, AlumnoUpdate
 from app.schemas.parentesco import ResponsableConParentescoPublic
 from app.schemas.alumno import AlumnoDetallePublic
 from app.schemas.alumno_detalle import AlumnoEscuelaDetallePublic
+from app.schemas.alumnos_historial import AlumnoCicloPage
 
 from app.services.alumno_service import (
     get_all_alumnos,
@@ -16,6 +17,7 @@ from app.services.alumno_service import (
     get_alumnos_detalle_por_escuela,
     get_alumnos_detalle_by_curso,
     get_alumno_detalle_por_id,
+    get_alumnos_historial_por_ciclo,
 )
 
 from app.services.parentesco_service import get_responsables_by_alumno
@@ -103,4 +105,24 @@ def updateAlumnoById(
         alumno_existente=alumno_existente,
         alumno_nuevo=alumno,
         db=session
+    )
+
+@router.get("/escuela/{cue}/historial", response_model=AlumnoCicloPage)
+def alumnos_historial_por_ciclo(
+    cue: str,
+    session: SessionDep,
+    cicloLectivo: str = Query(...),
+    q: str | None = Query(default=None),
+    soloActivos: bool = Query(default=False),
+    offset: int = 0,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+):
+    return get_alumnos_historial_por_ciclo(
+        db=session,
+        cue=cue,
+        ciclo_lectivo=cicloLectivo,
+        q=q,
+        solo_activos=soloActivos,
+        offset=offset,
+        limit=limit,
     )
