@@ -21,6 +21,7 @@ from app.services.alerta_service import (
 
 from collections import defaultdict
 from datetime import timedelta
+from app.models.inscriptos import Inscriptos
 
 # ==========================
 # Helpers
@@ -315,6 +316,19 @@ def stats_resumen(
 
     alumnos_riesgo = int(db.exec(select(func.count()).select_from(sub).where(sub.c.faltas >= umbral_riesgo)).one() or 0)
     riesgo_pct = round((alumnos_riesgo / alumnos_distintos) * 100, 2) if alumnos_distintos else 0.0
+        # ✅ Total alumnos de la escuela (matrícula activa por inscriptos)
+    stmt_total_alumnos = (
+        select(func.count(func.distinct(Inscriptos.idAlumno)))
+        .select_from(Inscriptos, Curso)
+        .where(
+            and_(
+                Curso.CUE == cue,
+                Inscriptos.idCurso == Curso.idCurso,
+                Inscriptos.activo.is_(True),
+            )
+        )
+    )
+    total_alumnos_escuela = int(db.exec(stmt_total_alumnos).one() or 0)
 
     # Top cursos por % ausentes
     stmt_cursos = (
@@ -361,6 +375,8 @@ def stats_resumen(
             "alumnosDistintos": alumnos_distintos,
             "alumnosRiesgo": alumnos_riesgo,
             "riesgoPct": riesgo_pct,
+            "totalAlumnosEscuela": total_alumnos_escuela,
+
         },
         "topCursosAusentismo": cursos_out[:5],
     }
@@ -686,3 +702,48 @@ def alertas_inasistencias_consecutivas(
     # Orden: más graves primero, y más recientes arriba
     alertas.sort(key=lambda x: (x["consecutivas"], x["fechaFinRacha"]), reverse=True)
     return alertas
+
+def stats_dias_semana(
+    db: SessionDep,
+    cue: str,
+    desde: date,
+    hasta: date,
+    curso_ids: Optional[list[int]] = None,
+):
+    """
+    Ausencias por día de la semana (SOLO Lunes a Viernes).
+    Devuelve el día YA en español para el front.
+    MySQL WEEKDAY(): 0=Lunes ... 6=Domingo
+    """
+    where = _base_where(cue, desde, hasta, curso_ids)
+
+    # solo ausentes
+    where = list(where) + [Asistencia.estado == "Ausente"]
+
+    weekday_num = func.weekday(Asistencia.fecha).label("weekday_num")
+
+    stmt = (
+        select(
+            weekday_num,
+            func.count().label("ausentes"),
+        )
+        .select_from(Asistencia, Curso)
+        .where(and_(*where))
+        .group_by(weekday_num)
+        .order_by(weekday_num)
+    )
+
+    rows = db.exec(stmt).all()
+
+    # Lun-Vie en español
+    names_es = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
+
+    # inicializamos lunes-viernes en 0
+    out_map = {i: 0 for i in range(0, 5)}
+
+    for r in rows:
+        wd = int(r.weekday_num)
+        if 0 <= wd <= 4:  # ✅ Lun-Vie
+            out_map[wd] = int(r.ausentes or 0)
+
+    return [{"dia": names_es[i], "ausentes": out_map[i]} for i in range(0, 5)]

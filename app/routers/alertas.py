@@ -14,6 +14,7 @@ from app.services.alerta_service import (
     add_intervencion,
     list_intervenciones,
     create_alerta,
+    stats_alertas_activas_por_escuela
 ) 
 router = APIRouter(prefix="/alertas", tags=["Alertas"])
 
@@ -72,3 +73,13 @@ def create_intervencion(
     session: SessionDep,
 ):
     return add_intervencion(db=session, idAlerta=idAlerta, payload=payload)
+
+@router.get("/stats/riesgo", response_model=list[AlertaListItem])
+def get_alertas_riesgo(
+    session: SessionDep,
+    cue: str,
+):
+    return stats_alertas_activas_por_escuela(
+        db=session,
+        cue=cue,
+    )

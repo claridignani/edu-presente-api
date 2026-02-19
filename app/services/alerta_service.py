@@ -632,3 +632,72 @@ def create_alerta(db: SessionDep, payload: AlertaCreate) -> Alerta:
     db.commit()
     db.refresh(alerta)
     return alerta
+# -----------------------------
+# 📊 Estadísticas Director
+# -----------------------------
+def stats_alertas_activas_por_escuela(
+    db: SessionDep,
+    cue: str,
+):
+    """
+    Devuelve alertas activas (no archivadas y no resueltas)
+    para usar como 'Alumnos en riesgo' en el panel del Director.
+    """
+
+    stmt = (
+        select(
+            Alerta,
+            Alumno.nombre,
+            Alumno.apellido,
+            Alumno.dni,
+            Curso.nombre.label("cursoNombre"),
+            Curso.division,
+            Curso.cicloLectivo,
+        )
+        .select_from(Alerta, Alumno, Curso)
+        .where(
+    and_(
+        Alerta.cue == cue,
+        Alerta.idAlumno == Alumno.idAlumno,
+        Alerta.idCurso == Curso.idCurso,
+        Alerta.archivada.is_(False),
+        Alerta.estado.in_(
+            [
+                EstadoAlerta.PENDIENTE,
+                EstadoAlerta.EN_PROCESO,
+                EstadoAlerta.CRITICO,
+            ]
+        )
+    )
+        )
+        .order_by(desc(Alerta.estado), desc(Alerta.created_at))
+    )
+
+    rows = db.exec(stmt).all()
+
+    out: list[AlertaListItem] = []
+
+    for alerta, nom, ape, dni, cursoNom, div, ciclo in rows:
+        curso_str = f"{cursoNom} {div} ({ciclo})".strip()
+
+        out.append(
+            AlertaListItem(
+                idAlerta=int(alerta.idAlerta),
+                cue=alerta.cue,
+                idAlumno=int(alerta.idAlumno),
+                alumnoNombre=f"{ape}, {nom}",
+                alumnoDni=dni,
+                idCurso=int(alerta.idCurso),
+                created_at=alerta.created_at,
+                curso=curso_str,
+                motivo=alerta.motivo,
+                consecutivas=int(alerta.consecutivas),
+                fechaInicioRacha=alerta.fechaInicioRacha,
+                fechaFinRacha=alerta.fechaFinRacha,
+                estado=alerta.estado,
+                ultimaAccionAt=alerta.ultimaAccionAt,
+                archivada=bool(alerta.archivada),
+            )
+        )
+
+    return out

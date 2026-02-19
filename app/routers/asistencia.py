@@ -20,7 +20,7 @@ from app.services.asistencia_service import (
     stats_riesgo_por_curso,
     stats_lluvia_comparativo,
     alertas_inasistencias_consecutivas,
-
+    stats_dias_semana
 )
 
 router = APIRouter(prefix="/asistencias", tags=["Asistencias"])
@@ -159,6 +159,25 @@ def read_stats_lluvia(
     cursos = cursoIds if cursoIds is not None else curso_ids
 
     return stats_lluvia_comparativo(
+        db=session,
+        cue=cue,
+        desde=desde,
+        hasta=hasta,
+        curso_ids=cursos,
+    )
+
+@router.get("/stats/dias-semana")
+def read_stats_dias_semana(
+    session: SessionDep,
+    cue: str,
+    desde: date,
+    hasta: date,
+    cursoIds: Optional[list[int]] = Query(default=None),
+    curso_ids: Optional[list[int]] = Query(default=None),
+):
+    cursos = cursoIds if cursoIds is not None else curso_ids
+
+    return stats_dias_semana(
         db=session,
         cue=cue,
         desde=desde,
