@@ -15,6 +15,8 @@ from app.routers import invitacion_docente
 from app.routers.ia import router as ia_router
 from app.routers.inscriptos_admin import router as inscriptos_admin_router
 from app.routers.alertas import router as alertas_router
+from app.routers.preinscripcion import router as preinscripcion_router
+
 app = FastAPI()
 
 origins = [
@@ -44,5 +46,5 @@ app.include_router(invitacion_docente.router)
 app.include_router(inscriptos_admin_router)
 app.include_router(alertas_router)
 app.include_router(ia_router)
-
+app.include_router(preinscripcion_router)
 

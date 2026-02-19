@@ -22,6 +22,7 @@ from app.models.movimiento_promocion_item import MovimientoPromocionItem
 from app.services.curso_service import get_one_curso
 from app.schemas.alumnos_historial import AlumnoCicloPage, AlumnoCicloRow
 from app.schemas.inscriptos import EstadoInscripcion
+from app.models.preinscripcion import Preinscripcion
 
 # HELPERS
 
@@ -293,7 +294,8 @@ def add_alumno(db: SessionDep, alumno_in: AlumnoCreate):
     if existente:
         raise HTTPException(status_code=400, detail="Ya existe un alumno con ese DNI")
 
-    data = alumno_in.model_dump(exclude={"idCurso"})
+    # ⚠️ Importante: NO guardamos CUE/cicloLectivo en Alumno (son para Preinscripcion)
+    data = alumno_in.model_dump(exclude={"idCurso", "CUE", "cicloLectivo"})
     data["dni"] = dni  # aseguramos limpio
 
     _require_not_empty(_clean_str(data.get("nombre")), "nombre")
@@ -306,7 +308,10 @@ def add_alumno(db: SessionDep, alumno_in: AlumnoCreate):
     db.commit()
     db.refresh(db_alumno)
 
-    if getattr(alumno_in, "idCurso", None) and alumno_in.idCurso > 0:
+    # ===============================
+    # 1) Si viene curso => matrícula real (Inscriptos)
+    # ===============================
+    if getattr(alumno_in, "idCurso", None) and alumno_in.idCurso and alumno_in.idCurso > 0:
         curso = get_one_curso(idCurso=alumno_in.idCurso, db=db)
         if curso is None:
             raise HTTPException(status_code=404, detail="El curso ingresado no existe")
@@ -317,8 +322,28 @@ def add_alumno(db: SessionDep, alumno_in: AlumnoCreate):
             db.add(insc)
             db.commit()
 
+    # ===============================
+    # 2) Si NO viene curso => preinscripción (Pendiente)
+    # ===============================
+    else:
+        cue = _clean_str(getattr(alumno_in, "CUE", None))
+        ciclo = _clean_str(getattr(alumno_in, "cicloLectivo", None))
+
+        # Si falta CUE o ciclo, no rompemos: solo creamos el alumno (pero lo ideal es enviarlos desde el front)
+        if cue and ciclo:
+            pre = Preinscripcion(
+                idAlumno=db_alumno.idAlumno,
+                CUE=cue,
+                cicloLectivo=ciclo,
+                estado="Pendiente",
+            )
+            db.add(pre)
+            db.commit()
+
     db.refresh(db_alumno)
     return db_alumno
+
+
 
 
 # UPDATE (con validación DNI único)

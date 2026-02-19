@@ -13,6 +13,7 @@ from app.models.movimiento_promocion import MovimientoPromocion
 from app.models.movimiento_promocion_item import MovimientoPromocionItem
 from app.schemas.inscriptos import EstadoInscripcion, AccionPromocion, InscripcionHistorialOut
 from app.schemas.movimientos import PromocionarOut
+from app.models.preinscripcion import Preinscripcion
 from app.services.curso_service import get_one_curso
 
 
@@ -319,11 +320,13 @@ def inscribir_alumno(idCurso: int, idAlumno: int, db: SessionDep, fechaAlta: dat
     if db.exec(stmt_mismo).first():
         raise HTTPException(status_code=400, detail="El alumno ya está inscripto y activo en este curso")
 
-    activa = _get_inscripcion_activa_en_ciclo(db, idAlumno, curso.cicloLectivo)
+    # 1) Cerrar inscripción activa en el mismo ciclo (regla 1-activa por ciclo)
+    activa = _get_inscripcion_activa_en_ciclo(db, idAlumno, str(curso.cicloLectivo))
     if activa and activa.idCurso != idCurso:
         _cerrar_inscripcion(activa, EstadoInscripcion.CambioCurso, hoy)
         db.add(activa)
 
+    # 2) Crear nueva inscripción
     nueva = Inscriptos(
         idCurso=idCurso,
         idAlumno=idAlumno,
@@ -332,10 +335,27 @@ def inscribir_alumno(idCurso: int, idAlumno: int, db: SessionDep, fechaAlta: dat
         estado=EstadoInscripcion.Activo,
     )
     db.add(nueva)
+
+    # 3) ✅ Si había preinscripción pendiente para (CUE + ciclo), marcarla como Asignada
+    stmt_pre = (
+        select(Preinscripcion)
+        .where(
+            Preinscripcion.idAlumno == idAlumno,
+            Preinscripcion.CUE == str(curso.CUE),
+            Preinscripcion.cicloLectivo == str(curso.cicloLectivo),
+            Preinscripcion.estado == "Pendiente",
+        )
+        .order_by(Preinscripcion.fechaCreacion.desc())
+        .limit(1)
+    )
+    pre = db.exec(stmt_pre).first()
+    if pre:
+        pre.estado = "Asignada"
+        db.add(pre)
+
     db.commit()
     db.refresh(nueva)
     return nueva
-
 
 # =========================
 # BAJA / DESINSCRIBIR (cierra)

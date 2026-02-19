@@ -21,7 +21,9 @@ class AlumnoPublic(AlumnoBase):
     idAlumno: int
 
 class AlumnoCreate(AlumnoBase):
-    idCurso: int
+    idCurso: Optional[int] = None
+    CUE: Optional[str] = None
+    cicloLectivo: Optional[str] = None
 
 class AlumnoUpdate(SQLModel):
     nombre: str | None = None
