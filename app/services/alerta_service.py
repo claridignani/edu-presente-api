@@ -448,6 +448,7 @@ def list_alertas(
                 estado=alerta.estado,
                 ultimaAccionAt=alerta.ultimaAccionAt,
                 archivada=bool(alerta.archivada),
+                detalle=getattr(alerta, "detalle", None),
             )
         )
     return out
@@ -610,6 +611,7 @@ def create_alerta(db: SessionDep, payload: AlertaCreate) -> Alerta:
         idAlumno=payload.idAlumno,
         motivo=payload.motivo,
         estado=payload.estado,
+        detalle=payload.detalle,
         archivada=False,
         consecutivas=payload.consecutivas or 0,
         fechaInicioRacha=payload.fechaInicioRacha or hoy,
@@ -681,23 +683,25 @@ def stats_alertas_activas_por_escuela(
         curso_str = f"{cursoNom} {div} ({ciclo})".strip()
 
         out.append(
-            AlertaListItem(
-                idAlerta=int(alerta.idAlerta),
-                cue=alerta.cue,
-                idAlumno=int(alerta.idAlumno),
-                alumnoNombre=f"{ape}, {nom}",
-                alumnoDni=dni,
-                idCurso=int(alerta.idCurso),
-                created_at=alerta.created_at,
-                curso=curso_str,
-                motivo=alerta.motivo,
-                consecutivas=int(alerta.consecutivas),
-                fechaInicioRacha=alerta.fechaInicioRacha,
-                fechaFinRacha=alerta.fechaFinRacha,
-                estado=alerta.estado,
-                ultimaAccionAt=alerta.ultimaAccionAt,
-                archivada=bool(alerta.archivada),
-            )
-        )
+    AlertaListItem(
+        idAlerta=int(alerta.idAlerta),
+        cue=alerta.cue,
+        idAlumno=int(alerta.idAlumno),
+        alumnoNombre=f"{ape}, {nom}",
+        alumnoDni=dni,
+        idCurso=int(alerta.idCurso),
+        created_at=alerta.created_at,
+        curso=curso_str,
+        motivo=alerta.motivo,
+        consecutivas=int(alerta.consecutivas),
+        fechaInicioRacha=alerta.fechaInicioRacha,
+        fechaFinRacha=alerta.fechaFinRacha,
+        detalle=getattr(alerta, "detalle", None),   # ✅ AQUI
+        estado=alerta.estado,
+        ultimaAccionAt=alerta.ultimaAccionAt,
+        archivada=bool(alerta.archivada),
+    )
+)
+
 
     return out

@@ -3,7 +3,8 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from typing import Optional
-from sqlmodel import SQLModel
+
+from sqlmodel import SQLModel, Field
 
 from app.models.alerta import EstadoAlerta, MotivoAlerta
 
@@ -27,16 +28,18 @@ class AlertaListItem(SQLModel):
     fechaFinRacha: date
     fechaInicioRacha: date
 
+    detalle: Optional[str] = Field(default=None, max_length=500)  # ✅
+
     estado: EstadoAlerta
     ultimaAccionAt: datetime | None = None
     archivada: bool = False
-
 
 
 class AlertaPatch(SQLModel):
     estado: Optional[EstadoAlerta] = None
     archivada: Optional[bool] = None
     actor_id: Optional[int] = None
+    detalle: Optional[str] = Field(default=None, max_length=500)  # ✅
 
 
 class AlertaCreate(SQLModel):
@@ -47,7 +50,9 @@ class AlertaCreate(SQLModel):
 
     motivo: MotivoAlerta
     estado: EstadoAlerta
-    detalle: Optional[str] = None
+
+    detalle: Optional[str] = Field(default=None, max_length=500)  # ✅ UNA sola vez
+
     created_by: Optional[int] = None
     consecutivas: Optional[int] = 0
     fechaInicioRacha: Optional[date] = None

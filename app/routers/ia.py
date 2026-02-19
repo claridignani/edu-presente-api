@@ -45,7 +45,6 @@ async def formalizar_texto(request: FormalizarRequest):
             f"1. 'formalText': La nota redactada profesionalmente.\n"
             f"2. 'motivo': El motivo principal de la falta (ej: Salud, Familiar, etc.).\n"
             f"3. 'gravedad': Una escala de 'Baja', 'Media' o 'Alta'.\n"
-            f"4. 'tags': Una lista de 3 palabras clave.\n\n"
             f"Responde ÚNICAMENTE el objeto JSON sin formato markdown."
         )
 

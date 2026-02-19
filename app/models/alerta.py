@@ -72,7 +72,7 @@ class Alerta(SQLModel, table=True):
     fechaFinRacha: date = Field(nullable=False)
 
     archivada: bool = Field(default=False, index=True, nullable=False)
-
+    detalle: Optional[str] = Field(default=None, max_length=500)
     ultimaAccionAt: datetime | None = Field(default=None)
     resueltaAt: datetime | None = Field(default=None)
 
