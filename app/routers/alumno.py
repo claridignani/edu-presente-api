@@ -1,7 +1,9 @@
 from typing import Annotated, Optional
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
 
 from app.dependencies import SessionDep
+from app.dependencies.auth import get_current_user
+from app.models.usuario import Usuario
 from app.schemas.alumno import AlumnoPublic, AlumnoCreate, AlumnoUpdate
 from app.schemas.parentesco import ResponsableConParentescoPublic
 from app.schemas.alumno import AlumnoDetallePublic
@@ -74,8 +76,13 @@ def getAlumnosByCurso(
 
 
 @router.post("/", response_model=AlumnoPublic)
-def create_alumno(alumno: AlumnoCreate, session: SessionDep):
-    return add_alumno(db=session, alumno_in=alumno)
+def create_alumno(
+    alumno: AlumnoCreate,
+    session: SessionDep,
+    current_user: Usuario = Depends(get_current_user), 
+):
+    return add_alumno(db=session, alumno_in=alumno, current_user=current_user)
+
 
 
 @router.get("/{idAlumno}", response_model=AlumnoPublic)

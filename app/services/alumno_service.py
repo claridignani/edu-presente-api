@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Annotated
-from datetime import datetime
+from datetime import datetime, date
 
 from fastapi import Query, HTTPException
 from typing import Optional
@@ -8,6 +8,9 @@ from sqlmodel import select
 from sqlalchemy import func, and_, desc, or_
 
 from app.dependencies import SessionDep
+from app.models.curso_docente import CursoDocente
+from app.models.rol import Rol 
+from app.schemas.rol import RolDescripcion, RolEstado
 from app.models.alumno import Alumno
 from app.models.curso import Curso
 from app.models.inscriptos import Inscriptos
@@ -41,6 +44,48 @@ def _require_not_empty(value: str | None, field_name: str):
 def _exists_otro_alumno_con_dni(db: SessionDep, dni: str, exclude_id: int) -> bool:
     stmt = select(Alumno).where(Alumno.dni == dni, Alumno.idAlumno != exclude_id)
     return db.exec(stmt).first() is not None
+
+def _is_admin_global(session: SessionDep, user_id: int) -> bool:
+    stmt = (
+        select(Rol)
+        .where(Rol.idUsuario == user_id)
+        .where(Rol.estado == RolEstado.Activo)
+        .where(Rol.descripcion == RolDescripcion.Administrador)
+    )
+    return session.exec(stmt).first() is not None
+
+
+def _has_active_role_in_cue(session: SessionDep, user_id: int, cue: str) -> Rol | None:
+    stmt = (
+        select(Rol)
+        .where(Rol.idUsuario == user_id)
+        .where(Rol.CUE == cue)
+        .where(Rol.estado == RolEstado.Activo)
+    )
+    return session.exec(stmt).first()
+
+
+def _require_docente_asignado_a_curso(session: SessionDep, user_id: int, idCurso: int) -> None:
+    """
+    Docente solo puede operar si tiene asignación Activa en curso_docente.
+    También respeta ventana fechaDesde/fechaHasta si están.
+    """
+    stmt = (
+        select(CursoDocente)
+        .where(CursoDocente.idUsuario == user_id)
+        .where(CursoDocente.idCurso == idCurso)
+        .where(CursoDocente.estado == "Activo")
+    )
+    cd = session.exec(stmt).first()
+    if not cd:
+        raise HTTPException(status_code=403, detail="Curso no asignado al docente")
+
+    hoy = date.today()
+    if cd.fechaDesde and cd.fechaDesde > hoy:
+        raise HTTPException(status_code=403, detail="Asignación docente aún no vigente")
+    if cd.fechaHasta and cd.fechaHasta < hoy:
+        raise HTTPException(status_code=403, detail="Asignación docente vencida")
+
 
 
 # GET ALL
@@ -284,7 +329,52 @@ def get_one_alumno(idAlumno: int, db: SessionDep):
 
 # CREATE
 
-def add_alumno(db: SessionDep, alumno_in: AlumnoCreate):
+def add_alumno(db: SessionDep, alumno_in: AlumnoCreate, current_user):
+    user_id = int(current_user.idUsuario)
+
+    def _require_director_or_docente_role_in_cue(cue: str) -> Rol:
+        # Admin global pasa sin rol en CUE
+        if _is_admin_global(db, user_id):
+            return None  # type: ignore
+
+        rol = _has_active_role_in_cue(db, user_id, cue)
+        if not rol:
+            raise HTTPException(status_code=403, detail="No autorizado para esta escuela")
+
+        # SOLO Director o Docente pueden crear
+        if rol.descripcion not in (RolDescripcion.Director, RolDescripcion.Docente):
+            raise HTTPException(status_code=403, detail="Rol no autorizado para crear alumnos")
+
+        return rol
+
+    if getattr(alumno_in, "idCurso", None) and alumno_in.idCurso and alumno_in.idCurso > 0:
+        curso = get_one_curso(idCurso=alumno_in.idCurso, db=db)
+        if curso is None:
+            raise HTTPException(status_code=404, detail="El curso ingresado no existe")
+
+        cue_curso = getattr(curso, "CUE", None)
+        if not cue_curso:
+            raise HTTPException(status_code=400, detail="El curso no tiene CUE")
+
+        rol = _require_director_or_docente_role_in_cue(cue_curso)
+
+        if rol and rol.descripcion == RolDescripcion.Docente:
+            _require_docente_asignado_a_curso(db, user_id, int(alumno_in.idCurso))
+    else:
+        if _is_admin_global(db, user_id):
+            pass
+        else:
+            cue = _clean_str(getattr(alumno_in, "CUE", None))
+            if not cue:
+                raise HTTPException(status_code=400, detail="Falta CUE para preinscripción")
+
+            rol = _has_active_role_in_cue(db, user_id, cue)
+            if not rol:
+                raise HTTPException(status_code=403, detail="No autorizado para esta escuela")
+
+            if rol.descripcion != RolDescripcion.Director:
+                raise HTTPException(status_code=403, detail="Solo Director puede crear preinscripciones")
+
     dni = _clean_str(alumno_in.dni) or ""
 
     if not dni:
@@ -294,9 +384,8 @@ def add_alumno(db: SessionDep, alumno_in: AlumnoCreate):
     if existente:
         raise HTTPException(status_code=400, detail="Ya existe un alumno con ese DNI")
 
-    # ⚠️ Importante: NO guardamos CUE/cicloLectivo en Alumno (son para Preinscripcion)
     data = alumno_in.model_dump(exclude={"idCurso", "CUE", "cicloLectivo"})
-    data["dni"] = dni  # aseguramos limpio
+    data["dni"] = dni 
 
     _require_not_empty(_clean_str(data.get("nombre")), "nombre")
     _require_not_empty(_clean_str(data.get("apellido")), "apellido")
@@ -308,28 +397,30 @@ def add_alumno(db: SessionDep, alumno_in: AlumnoCreate):
     db.commit()
     db.refresh(db_alumno)
 
-    # ===============================
     # 1) Si viene curso => matrícula real (Inscriptos)
-    # ===============================
     if getattr(alumno_in, "idCurso", None) and alumno_in.idCurso and alumno_in.idCurso > 0:
         curso = get_one_curso(idCurso=alumno_in.idCurso, db=db)
         if curso is None:
             raise HTTPException(status_code=404, detail="El curso ingresado no existe")
 
-        ya = db.get(Inscriptos, (alumno_in.idCurso, db_alumno.idAlumno))
+        ya = db.exec(
+            select(Inscriptos).where(
+                Inscriptos.idCurso == alumno_in.idCurso,
+                Inscriptos.idAlumno == db_alumno.idAlumno,
+                Inscriptos.activo == True,  # si querés evitar duplicados activos
+            )
+        ).first()
+
         if not ya:
             insc = Inscriptos(idCurso=alumno_in.idCurso, idAlumno=db_alumno.idAlumno)
             db.add(insc)
             db.commit()
 
-    # ===============================
     # 2) Si NO viene curso => preinscripción (Pendiente)
-    # ===============================
     else:
         cue = _clean_str(getattr(alumno_in, "CUE", None))
         ciclo = _clean_str(getattr(alumno_in, "cicloLectivo", None))
 
-        # Si falta CUE o ciclo, no rompemos: solo creamos el alumno (pero lo ideal es enviarlos desde el front)
         if cue and ciclo:
             pre = Preinscripcion(
                 idAlumno=db_alumno.idAlumno,
@@ -342,6 +433,7 @@ def add_alumno(db: SessionDep, alumno_in: AlumnoCreate):
 
     db.refresh(db_alumno)
     return db_alumno
+
 
 
 
