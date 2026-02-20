@@ -123,7 +123,7 @@ def get_cursos_by_usuario(db: SessionDep, idUsuario: int):
     hoy = date.today()
 
     stmt = (
-        select(Curso, Escuela)
+        select(Curso, Escuela, CursoDocente)
         .select_from(CursoDocente)
         .join(Curso, CursoDocente.idCurso == Curso.idCurso)
         .join(Escuela, Escuela.CUE == Curso.CUE)

@@ -12,7 +12,7 @@ from app.models.usuario import Usuario
 from app.models.rol import Rol
 from app.schemas.rol import RolDescripcion, RolEstado
 
-from app.schemas.curso import CursoPublic, CursoUpdate
+from app.schemas.curso import CursoPublic, CursoUpdate, CursoAsignadoPublic
 from app.schemas.escuela import EscuelaMiniConCursos
 from app.schemas.curso_docente import CursoDocenteCreate, CursoDocentePublic, CursoDocenteDetalle
 from app.schemas.cursos_admin import CopiarEstructuraCursosIn, CopiarEstructuraCursosOut
@@ -140,7 +140,7 @@ def get_cursos_and_escuelas_by_usuario(
 
     agrupados: dict[str, EscuelaMiniConCursos] = {}
 
-    for curso, escuela in resultados:
+    for curso, escuela, cd in resultados:
         cue = getattr(escuela, "CUE", None)
         nombre = getattr(escuela, "nombre", "") or ""
 
@@ -150,7 +150,10 @@ def get_cursos_and_escuelas_by_usuario(
         if cue not in agrupados:
             agrupados[cue] = EscuelaMiniConCursos(CUE=cue, nombre=nombre, cursos=[])
 
-        agrupados[cue].cursos.append(CursoPublic.model_validate(curso, from_attributes=True))
+        base = CursoPublic.model_validate(curso, from_attributes=True).model_dump()
+        agrupados[cue].cursos.append(
+            CursoAsignadoPublic(**base, tipoDocente=getattr(cd, "tipo", None))
+        )
 
     return list(agrupados.values())
 

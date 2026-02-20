@@ -2,6 +2,7 @@ from enum import Enum
 from sqlmodel import SQLModel, Field
 from typing import List
 from pydantic import BaseModel
+from typing import Optional
 
 class TurnoCurso(str, Enum):
     Manana = "Manana"
@@ -20,10 +21,13 @@ class CursoPublic(CursoBase):
     idCurso: int
     CUE: str
 
+class CursoAsignadoPublic(CursoBase):
+    idCurso: int
+    CUE: str
+    tipoDocente: Optional[str] = None  # "Titular" | "Suplente"
 
 class CursoCreate(CursoBase):
     pass
-
 
 class CursoUpdate(SQLModel):
     nombre: str | None = None

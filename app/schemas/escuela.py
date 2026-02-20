@@ -7,7 +7,7 @@ from typing import List, Optional
 from pydantic import EmailStr, field_validator
 from sqlmodel import SQLModel, Field
 
-from app.schemas.curso import CursoPublic
+from app.schemas.curso import CursoPublic, CursoAsignadoPublic
 
 TEL_RE = re.compile(r"^\d{10,15}$")
 
@@ -69,7 +69,7 @@ class EscuelaMini(SQLModel):
 
 
 class EscuelaMiniConCursos(EscuelaMini):
-    cursos: List[CursoPublic] = []
+    cursos: List[CursoAsignadoPublic] = []
 
 
 # ==========================
