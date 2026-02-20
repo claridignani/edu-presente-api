@@ -1,5 +1,7 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException
 from app.dependencies import SessionDep
+from app.dependencies.auth import get_current_user
+from app.models.usuario import Usuario
 
 from app.schemas.alumno import AlumnoPublic
 from app.schemas.inscriptos import (
@@ -30,7 +32,7 @@ router = APIRouter(prefix="/inscriptos", tags=["Inscriptos"])
 
 
 @router.post("/", response_model=InscriptosPublic)
-def inscribir(payload: InscriptosCreate, session: SessionDep):
+def inscribir(payload: InscriptosCreate, session: SessionDep, current_user: Usuario = Depends(get_current_user)):
     return inscribir_alumno(
         idCurso=payload.idCurso,
         idAlumno=payload.idAlumno,
@@ -38,9 +40,8 @@ def inscribir(payload: InscriptosCreate, session: SessionDep):
         fechaAlta=payload.fechaAlta,
     )
 
-
 @router.delete("/{idCurso}/{idAlumno}", response_model=InscriptosPublic)
-def desinscribir(idCurso: int, idAlumno: int, session: SessionDep):
+def desinscribir(idCurso: int, idAlumno: int, session: SessionDep, current_user: Usuario = Depends(get_current_user)):
     return desinscribir_alumno(idCurso=idCurso, idAlumno=idAlumno, db=session)
 
 
