@@ -454,15 +454,20 @@ def list_alertas(
     return out
 
 
-def patch_alerta(db: SessionDep, idAlerta: int, patch: AlertaPatch) -> Alerta:
+def patch_alerta(
+    db: SessionDep,
+    idAlerta: int,
+    patch: AlertaPatch,
+    actor_user_id: int | None = None,
+) -> Alerta:
     alerta = db.get(Alerta, idAlerta)
     if not alerta:
         raise HTTPException(status_code=404, detail="Alerta no encontrada")
 
     data = patch.model_dump(exclude_unset=True)
 
-    # ✅ sacamos actor_id del patch (no lo seteamos como atributo del modelo Alerta)
-    actor_id = data.pop("actor_id", None)
+    # ✅ actor desde JWT (prioridad) o desde patch (compat)
+    actor_id = actor_user_id if actor_user_id is not None else data.pop("actor_id", None)
 
     prev_estado = alerta.estado
     prev_archivada = bool(alerta.archivada)
@@ -474,12 +479,12 @@ def patch_alerta(db: SessionDep, idAlerta: int, patch: AlertaPatch) -> Alerta:
     for k, v in data.items():
         setattr(alerta, k, v)
 
-    # ✅ persistimos cambios base
+    # persistimos cambios base
     db.add(alerta)
     db.commit()
     db.refresh(alerta)
 
-    # ✅ registrar eventos si hubo cambios (auditoría)
+    # registrar eventos si hubo cambios (auditoría)
     actor_nombre, actor_rol = _actor_snapshot(db, actor_id, alerta.cue)
 
     hubo_cambio = False
@@ -517,7 +522,7 @@ def patch_alerta(db: SessionDep, idAlerta: int, patch: AlertaPatch) -> Alerta:
         )
         db.add(ev)
 
-    # ✅ si hubo cambios "reales", actualizamos ultimaAccionAt y comiteamos eventos + timestamp
+    # si hubo cambios "reales", actualizamos ultimaAccionAt y comiteamos
     if hubo_cambio:
         alerta.ultimaAccionAt = datetime.utcnow()
         db.add(alerta)
@@ -526,20 +531,28 @@ def patch_alerta(db: SessionDep, idAlerta: int, patch: AlertaPatch) -> Alerta:
 
     return alerta
 
-def add_intervencion(db: SessionDep, idAlerta: int, payload: IntervencionCreate) -> IntervencionPublic:
+def add_intervencion(
+    db: SessionDep,
+    idAlerta: int,
+    payload: IntervencionCreate,
+    actor_user_id: int | None = None,
+) -> IntervencionPublic:
     alerta = db.get(Alerta, idAlerta)
     if not alerta:
         raise HTTPException(status_code=404, detail="Alerta no encontrada")
 
-    # ✅ snapshot del actor (nombre + rol) según el CUE de la alerta
-    actor_nombre, actor_rol = _actor_snapshot(db, payload.created_by, alerta.cue)
+    # ✅ actor desde JWT (prioridad) o desde payload (compat)
+    actor_id = actor_user_id if actor_user_id is not None else getattr(payload, "created_by", None)
+
+    # snapshot del actor (nombre + rol) según el CUE de la alerta
+    actor_nombre, actor_rol = _actor_snapshot(db, actor_id, alerta.cue)
 
     inter = Intervencion(
         idAlerta=idAlerta,
         evento=EventoHistorial.INTERVENCION,
         tipo=payload.tipo,
         detalle=payload.detalle,
-        created_by=payload.created_by,
+        created_by=actor_id,
         actor_nombre=actor_nombre,
         actor_rol=actor_rol,
         detalleFormal=getattr(payload, "detalleFormal", None),
@@ -547,7 +560,7 @@ def add_intervencion(db: SessionDep, idAlerta: int, payload: IntervencionCreate)
     )
     db.add(inter)
 
-    # ✅ actualizar metadata de la alerta
+    # actualizar metadata de la alerta
     alerta.ultimaAccionAt = datetime.utcnow()
     if alerta.estado == EstadoAlerta.PENDIENTE:
         alerta.estado = EstadoAlerta.EN_PROCESO
@@ -574,8 +587,7 @@ def add_intervencion(db: SessionDep, idAlerta: int, payload: IntervencionCreate)
         created_at=inter.created_at,
     )
 
-
-def create_alerta(db: SessionDep, payload: AlertaCreate) -> Alerta:
+def create_alerta(db: SessionDep,payload: AlertaCreate,actor_user_id: int | None = None,) -> Alerta:
     """
     Crea una alerta manual desde el front (Asistente).
     """
@@ -623,8 +635,9 @@ def create_alerta(db: SessionDep, payload: AlertaCreate) -> Alerta:
         setattr(alerta, "detalle", payload.detalle)
 
     # created_by si existe en modelo
+    actor_id = actor_user_id if actor_user_id is not None else getattr(payload, "created_by", None)
     if hasattr(alerta, "created_by"):
-        setattr(alerta, "created_by", payload.created_by)
+        setattr(alerta, "created_by", actor_id)
         
     now = datetime.utcnow()
     alerta.created_at = now

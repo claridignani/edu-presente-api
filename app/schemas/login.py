@@ -1,5 +1,6 @@
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
+
 
 class LoginRequest(BaseModel):
     dni: str
@@ -7,7 +8,7 @@ class LoginRequest(BaseModel):
 
 
 class OpcionRol(BaseModel):
-    idUsuario: int | None
+    idUsuario: Optional[int] = None
     descripcion: str
     CUE: str
     nombre_escuela: str
@@ -15,7 +16,9 @@ class OpcionRol(BaseModel):
 
 class LoginResponse(BaseModel):
     mensaje: str
-    usuario_id: int | None
+    usuario_id: Optional[int] = None
     nombre: str
     apellido: str
     roles_disponibles: List[OpcionRol]
+    access_token: str
+    token_type: str = "bearer"

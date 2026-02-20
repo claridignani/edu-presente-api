@@ -36,11 +36,12 @@ class Alerta(SQLModel, table=True):
 
     idAlerta: Optional[int] = Field(default=None, primary_key=True)
 
-    cue: str = Field(max_length=20, nullable=False, index=True)
+    # ✅ ideal: FK a escuela.CUE para asegurar integridad referencial
+    cue: str = Field(foreign_key="escuela.CUE", max_length=20, nullable=False, index=True)
 
     idCurso: int = Field(foreign_key="curso.idCurso", index=True, nullable=False)
     idAlumno: int = Field(foreign_key="alumno.idAlumno", index=True, nullable=False)
-    created_at: datetime = Field(default_factory=datetime.utcnow, nullable=False)
+
     motivo: MotivoAlerta = Field(
         sa_column=Column(
             SAEnum(
@@ -67,16 +68,19 @@ class Alerta(SQLModel, table=True):
         default=EstadoAlerta.PENDIENTE,
     )
 
-    consecutivas: int = Field(default=3, nullable=False)
-    fechaInicioRacha: date = Field(nullable=False)
-    fechaFinRacha: date = Field(nullable=False)
+    # Si la creás manualmente puede no ser 3; en automática tal vez sí.
+    consecutivas: int = Field(default=0, nullable=False)
+
+    # ✅ mejor permitir null si hay alertas manuales sin racha
+    fechaInicioRacha: Optional[date] = Field(default=None)
+    fechaFinRacha: Optional[date] = Field(default=None)
 
     archivada: bool = Field(default=False, index=True, nullable=False)
     detalle: Optional[str] = Field(default=None, max_length=500)
-    ultimaAccionAt: datetime | None = Field(default=None)
-    resueltaAt: datetime | None = Field(default=None)
 
-    created_at: datetime | None = Field(
-        default=None,
-        sa_column=Column(DateTime, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
+    ultimaAccionAt: Optional[datetime] = Field(default=None)
+    resueltaAt: Optional[datetime] = Field(default=None)
+
+    created_at: datetime = Field(
+        sa_column=Column(DateTime, nullable=False, server_default=text("CURRENT_TIMESTAMP"))
     )
