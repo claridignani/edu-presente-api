@@ -8,6 +8,7 @@ dependencies = [
     "fastapi[standard]>=0.128.0",
     "google-genai>=1.63.0",
     "google-generativeai>=0.8.6",
+    "httpx>=0.28.1",
     "mysqlclient>=2.2.7",
     "pwdlib[argon2]>=0.3.0",
     "python-dotenv>=1.2.1",

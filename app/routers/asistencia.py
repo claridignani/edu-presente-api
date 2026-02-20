@@ -22,6 +22,7 @@ from app.services.asistencia_service import (
     alertas_inasistencias_consecutivas,
     stats_dias_semana
 )
+from app.services.whatsapp_service import enviar_plantilla_inasistencia
 
 router = APIRouter(prefix="/asistencias", tags=["Asistencias"])
 
@@ -319,3 +320,8 @@ def read_asistencias_by_curso_fecha(
         )
         for r in rows
     ]
+
+@router.post("/asistencia/notificar")
+async def registrar_asistencia(telefono: str,apellido: str, nombre: str, dni: str, session: SessionDep):
+    await enviar_plantilla_inasistencia(telefono=telefono, apellido=apellido, nombre=nombre, dni=dni)
+    return {"ok": True}
