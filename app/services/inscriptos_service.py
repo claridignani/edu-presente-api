@@ -453,15 +453,17 @@ def get_inscriptos_by_curso(idCurso: int, db: SessionDep, solo_activos: bool = T
     return db.exec(stmt).all()
 
 
-# =========================
-# ✅ TIMELINE: Movimientos + Cambios de curso (desde Inscriptos)
-# =========================
 def get_timeline_alumno(db: SessionDep, id_alumno: int) -> list[dict]:
     from sqlalchemy.orm import aliased
+
     CursoOrigen = aliased(Curso)
     CursoDestino = aliased(Curso)
 
-    # 1) movimientos "oficiales"
+    timeline: list[dict] = []
+
+    # =========================================================
+    # 1) Movimientos "oficiales" (actas)
+    # =========================================================
     stmt_mov = (
         select(
             MovimientoPromocion.fecha,
@@ -471,7 +473,7 @@ def get_timeline_alumno(db: SessionDep, id_alumno: int) -> list[dict]:
             CursoOrigen.cicloLectivo.label("orig_ciclo"),
             CursoDestino.nombre.label("dest_nombre"),
             CursoDestino.division.label("dest_div"),
-            CursoDestino.cicloLectivo.label("dest_ciclo")
+            CursoDestino.cicloLectivo.label("dest_ciclo"),
         )
         .join(MovimientoPromocion, MovimientoPromocion.idMovimiento == MovimientoPromocionItem.idMovimiento)
         .join(CursoOrigen, CursoOrigen.idCurso == MovimientoPromocionItem.idCursoOrigen)
@@ -481,14 +483,38 @@ def get_timeline_alumno(db: SessionDep, id_alumno: int) -> list[dict]:
     )
     movs = db.exec(stmt_mov).all()
 
-    timeline: list[dict] = []
     for r in movs:
-        detalle = f"De {_fmt_curso(r.orig_nombre, r.orig_div, r.orig_ciclo)}"
-        if r.dest_nombre:
-            detalle += f" a {_fmt_curso(r.dest_nombre, r.dest_div, r.dest_ciclo)}"
-        timeline.append({"fecha": r.fecha, "accion": r.accion, "detalle": detalle})
+        accion = str(r.accion or "").strip()
 
-    # 2) cambios de curso (detectados por inscriptos)
+        orig_txt = _fmt_curso(r.orig_nombre, r.orig_div, r.orig_ciclo)
+        dest_txt = _fmt_curso(r.dest_nombre, r.dest_div, r.dest_ciclo) if r.dest_nombre else None
+
+        if accion == "Promociona":
+            detalle = f"De {orig_txt}"
+            if dest_txt:
+                detalle += f" a {dest_txt}"
+
+        elif accion == "Repite":
+            # ✅ no mencionar el curso destino ni el ciclo (porque después aparece "AsignacionCurso")
+            detalle = f"Repite en {orig_txt} "
+
+        elif accion == "Baja":
+            # ✅ no decir curso destino, porque no corresponde
+            detalle = f"Baja en {orig_txt}"
+
+        elif accion == "Egresa":
+            detalle = f"Egresa de {orig_txt}"
+
+        else:
+            detalle = f"De {orig_txt}"
+            if dest_txt:
+                detalle += f" a {dest_txt}"
+
+        timeline.append({"fecha": r.fecha, "accion": accion, "detalle": detalle})
+
+    # =========================================================
+    # 2) Cambios de curso (dentro del mismo ciclo) desde Inscriptos
+    # =========================================================
     stmt_cc = (
         select(Inscriptos, Curso)
         .join(Curso, Curso.idCurso == Inscriptos.idCurso)
@@ -512,7 +538,7 @@ def get_timeline_alumno(db: SessionDep, id_alumno: int) -> list[dict]:
 
         dest_text = "—"
         if destino:
-            insc_dest, curso_dest = destino
+            _, curso_dest = destino
             dest_text = _fmt_curso(curso_dest.nombre, curso_dest.division, curso_dest.cicloLectivo)
 
         detalle = f"De {_fmt_curso(curso_origen.nombre, curso_origen.division, curso_origen.cicloLectivo)} a {dest_text}"
@@ -522,14 +548,92 @@ def get_timeline_alumno(db: SessionDep, id_alumno: int) -> list[dict]:
             "detalle": detalle
         })
 
-    # 3) ordenar final por fecha desc
+    # =========================================================
+    # 3) Asignación desde Preinscripción (repitentes “sin curso”)
+    #    - Cuando después asignás un curso en ese ciclo, NO es CambioCurso,
+    #      entonces lo mostramos como "AsignacionCurso".
+    # =========================================================
+    stmt_pre = (
+        select(Preinscripcion)
+        .where(Preinscripcion.idAlumno == id_alumno)
+        .order_by(desc(Preinscripcion.fechaCreacion))
+    )
+    pres = db.exec(stmt_pre).all()
+
+    # Map (CUE|ciclo) -> última preinscripción
+    pre_map: dict[str, Preinscripcion] = {}
+    for p in pres:
+        key = f"{p.CUE}|{p.cicloLectivo}"
+        if key not in pre_map:
+            pre_map[key] = p
+
+    if pre_map:
+        # Traemos inscripciones del alumno con su curso
+        stmt_insc = (
+            select(Inscriptos, Curso)
+            .join(Curso, Curso.idCurso == Inscriptos.idCurso)
+            .where(Inscriptos.idAlumno == id_alumno)
+            .order_by(desc(Inscriptos.fechaAlta), desc(Inscriptos.idInscripcion))
+        )
+        inscs = db.exec(stmt_insc).all()
+
+        for insc, curso in inscs:
+            key = f"{curso.CUE}|{curso.cicloLectivo}"
+            pre = pre_map.get(key)
+            if not pre:
+                continue
+
+            # Solo si está ASIGNADA (es decir, ya le pusieron curso)
+            if str(pre.estado or "").strip().lower() != "asignada":
+                continue
+
+            # Evitar duplicados: mostramos la asignación en la fecha de alta de la inscripción
+            # (si hubo varias, igual va a aparecer la más reciente; está ok)
+            detalle = f"Ciclo {curso.cicloLectivo}: asignado a {_fmt_curso(curso.nombre, curso.division, curso.cicloLectivo)}"
+            timeline.append({
+                "fecha": insc.fechaAlta,
+                "accion": "AsignacionCurso",
+                "detalle": detalle,
+            })
+
+    # =========================================================
+    # 4) Orden final por fecha desc
+    # =========================================================
     timeline.sort(key=lambda x: x["fecha"], reverse=True)
     return timeline
 
+# =========================
+# HISTORIAL INSCRIPCIONES (sin duplicado)
+# =========================
+def get_historial_inscripciones_alumno(db: SessionDep, idAlumno: int) -> list[InscripcionHistorialOut]:
+    _get_alumno_or_404(db, idAlumno)
 
-# =========================
-# ✅ AUDITORÍA: Movimientos + Cambios de curso (desde Inscriptos)
-# =========================
+    stmt = (
+        select(Inscriptos, Curso)
+        .join(Curso, Curso.idCurso == Inscriptos.idCurso)
+        .where(Inscriptos.idAlumno == idAlumno)
+        .order_by(desc(Inscriptos.fechaAlta), desc(Inscriptos.idInscripcion))
+    )
+
+    rows = db.exec(stmt).all()
+
+    out: list[InscripcionHistorialOut] = []
+    for insc, curso in rows:
+        out.append(
+            InscripcionHistorialOut(
+                idInscripcion=int(insc.idInscripcion),
+                idCurso=int(insc.idCurso),
+                cicloLectivo=str(curso.cicloLectivo),
+                cursoNombre=str(curso.nombre),
+                cursoDivision=str(curso.division),
+                fechaAlta=insc.fechaAlta,
+                fechaBaja=insc.fechaBaja,
+                activo=bool(insc.activo),
+                estado=insc.estado,
+            )
+        )
+    return out
+
 def get_auditoria_alumnos_detalle(
     db: SessionDep,
     cue: str,
@@ -620,7 +724,7 @@ def get_auditoria_alumnos_detalle(
                 dest_txt = f"{curso_dest.nombre} {curso_dest.division}"
 
             auditoria.append({
-                "idMovimiento": None,  # no es un acta
+                "idMovimiento": None,
                 "fecha": insc_origen.fechaBaja,
                 "idAlumno": int(alumno.idAlumno),
                 "alumno": f"{alumno.apellido}, {alumno.nombre}",
@@ -630,39 +734,5 @@ def get_auditoria_alumnos_detalle(
                 "cursoDestino": dest_txt
             })
 
-    # orden final por fecha desc
     auditoria.sort(key=lambda x: x["fecha"], reverse=True)
     return auditoria
-
-
-# =========================
-# HISTORIAL INSCRIPCIONES (sin duplicado)
-# =========================
-def get_historial_inscripciones_alumno(db: SessionDep, idAlumno: int) -> list[InscripcionHistorialOut]:
-    _get_alumno_or_404(db, idAlumno)
-
-    stmt = (
-        select(Inscriptos, Curso)
-        .join(Curso, Curso.idCurso == Inscriptos.idCurso)
-        .where(Inscriptos.idAlumno == idAlumno)
-        .order_by(desc(Inscriptos.fechaAlta), desc(Inscriptos.idInscripcion))
-    )
-
-    rows = db.exec(stmt).all()
-
-    out: list[InscripcionHistorialOut] = []
-    for insc, curso in rows:
-        out.append(
-            InscripcionHistorialOut(
-                idInscripcion=int(insc.idInscripcion),
-                idCurso=int(insc.idCurso),
-                cicloLectivo=str(curso.cicloLectivo),
-                cursoNombre=str(curso.nombre),
-                cursoDivision=str(curso.division),
-                fechaAlta=insc.fechaAlta,
-                fechaBaja=insc.fechaBaja,
-                activo=bool(insc.activo),
-                estado=insc.estado,
-            )
-        )
-    return out

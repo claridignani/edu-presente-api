@@ -26,6 +26,7 @@ from app.services.inscriptos_service import (
     detalle_movimiento,
     deshacer_movimiento,
     get_historial_inscripciones_alumno,
+    get_auditoria_alumnos_detalle,
 )
 
 router = APIRouter(prefix="/inscriptos", tags=["Inscriptos"])
@@ -91,7 +92,7 @@ def listar_auditoria_alumnos(cue: str, session: SessionDep, anio: str = None, ac
     """
     Lista plana para auditoría global (movimientos promocionar).
     """
-    return inscriptos_service.get_auditoria_alumnos_detalle(
+    return get_auditoria_alumnos_detalle(
         db=session, cue=cue, anio=anio, accion=accion
     )
 

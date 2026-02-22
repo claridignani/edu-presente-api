@@ -557,48 +557,6 @@ def delete_alumno(db: SessionDep, alumno: Alumno):
     db.delete(alumno)
     db.commit()
 
-def get_timeline_alumno(db: SessionDep, id_alumno: int) -> list[dict]:
-    from sqlalchemy.orm import aliased
-    # Alias para unir los nombres de cursos origen y destino
-    CursoOrigen = aliased(Curso)
-    CursoDestino = aliased(Curso)
-
-    stmt = (
-        select(
-            MovimientoPromocion.fecha,
-            MovimientoPromocionItem.accion,
-            CursoOrigen.nombre.label("orig_nombre"),
-            CursoOrigen.division.label("orig_div"),
-            CursoOrigen.cicloLectivo.label("orig_ciclo"),
-            CursoDestino.nombre.label("dest_nombre"),
-            CursoDestino.division.label("dest_div"),
-            CursoDestino.cicloLectivo.label("dest_ciclo")
-        )
-        .join(MovimientoPromocion, MovimientoPromocion.idMovimiento == MovimientoPromocionItem.idMovimiento)
-        .join(CursoOrigen, CursoOrigen.idCurso == MovimientoPromocionItem.idCursoOrigen)
-        .outerjoin(CursoDestino, CursoDestino.idCurso == MovimientoPromocionItem.idCursoDestino)
-        .where(MovimientoPromocionItem.idAlumno == id_alumno)
-        .where(MovimientoPromocion.estado == "Activo")
-        .order_by(desc(MovimientoPromocion.fecha))
-    )
-    
-    results = db.exec(stmt).all()
-    
-    timeline = []
-    for r in results:
-        detalle_curso = f"De {r.orig_nombre} {r.orig_div} ({r.orig_ciclo})"
-        if r.dest_nombre:
-            detalle_curso += f" a {r.dest_nombre} {r.dest_div} ({r.dest_ciclo})"
-            
-        timeline.append({
-            "fecha": r.fecha,
-            "accion": r.accion,
-            "detalle": detalle_curso
-        })
-    return timeline
-
-
-
 def get_alumnos_historial_por_ciclo(
     db: SessionDep,
     cue: str,
