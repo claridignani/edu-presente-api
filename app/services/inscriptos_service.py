@@ -88,7 +88,7 @@ def _buscar_destino_cambio_curso(
 
 
 # =========================
-# ✅ PROMOCIONAR + registrar movimiento
+# PROMOCIONAR + registrar movimiento
 # =========================
 def promocionar_alumnos(
     idCursoOrigen: int,
@@ -111,6 +111,7 @@ def promocionar_alumnos(
         raise HTTPException(status_code=422, detail="Falta director_id válido")
 
     try:
+        # 1) Crear movimiento (acta)
         mov = MovimientoPromocion(
             cue=cue,
             director_id=int(director_id),
@@ -120,20 +121,22 @@ def promocionar_alumnos(
             estado="Activo",
         )
         db.add(mov)
-        db.commit()
-        db.refresh(mov)
+        db.flush()  # ✅ para tener mov.idMovimiento sin commit
 
         for item in alumnos:
             _get_alumno_or_404(db, item.idAlumno)
 
-            stmt = select(Inscriptos).where(
-                Inscriptos.idCurso == idCursoOrigen,
-                Inscriptos.idAlumno == item.idAlumno,
-                Inscriptos.activo == True,  # noqa: E712
-            )
-            insc_origen = db.exec(stmt).first()
+            # 2) Buscar inscripción activa en ORIGEN
+            insc_origen = db.exec(
+                select(Inscriptos).where(
+                    Inscriptos.idCurso == idCursoOrigen,
+                    Inscriptos.idAlumno == item.idAlumno,
+                    Inscriptos.activo == True,  # noqa: E712
+                )
+            ).first()
             id_insc_origen = int(insc_origen.idInscripcion) if insc_origen else None
 
+            # 3) Cerrar origen según acción
             if insc_origen:
                 if item.accion == AccionPromocion.Promociona:
                     _cerrar_inscripcion(insc_origen, EstadoInscripcion.Promocionado, hoy)
@@ -146,26 +149,80 @@ def promocionar_alumnos(
 
                 db.add(insc_origen)
 
-            id_insc_destino = None
-            if item.accion in (AccionPromocion.Promociona, AccionPromocion.Repite):
-                nueva = Inscriptos(
-                    idCurso=idCursoDestino,
-                    idAlumno=item.idAlumno,
-                    fechaAlta=hoy,
-                    activo=True,
-                    estado=EstadoInscripcion.Repitente
-                    if item.accion == AccionPromocion.Repite
-                    else EstadoInscripcion.Activo,
-                )
-                db.add(nueva)
-                db.commit()
-                db.refresh(nueva)
-                id_insc_destino = int(nueva.idInscripcion)
+            # ✅ Asegura que el UPDATE del origen salga antes de tocar destino/pre
+            db.flush()
 
+            # 4) Destino / Preinscripción
+            id_insc_destino = None
+
+            # ✅ PROMOCIONA: crea o reutiliza inscripción en curso destino
+            if item.accion == AccionPromocion.Promociona:
+                estado_dest = EstadoInscripcion.Activo
+
+                existente = db.exec(
+                    select(Inscriptos)
+                    .where(
+                        Inscriptos.idCurso == idCursoDestino,
+                        Inscriptos.idAlumno == item.idAlumno,
+                    )
+                    .with_for_update()
+                ).first()
+
+                if existente:
+                    existente.activo = True
+                    existente.fechaBaja = None
+                    existente.estado = estado_dest
+                    db.add(existente)
+                    db.flush()
+                    id_insc_destino = int(existente.idInscripcion)
+                else:
+                    nueva = Inscriptos(
+                        idCurso=idCursoDestino,
+                        idAlumno=item.idAlumno,
+                        fechaAlta=hoy,
+                        activo=True,
+                        estado=estado_dest,
+                    )
+                    db.add(nueva)
+                    db.flush()
+                    id_insc_destino = int(nueva.idInscripcion)
+
+            # ✅ REPITE: NO va a destino -> queda SIN CURSO (Preinscripción Pendiente en ciclo nuevo)
+            elif item.accion == AccionPromocion.Repite:
+                stmt_pre = (
+                    select(Preinscripcion)
+                    .where(
+                        Preinscripcion.idAlumno == item.idAlumno,
+                        Preinscripcion.CUE == cue,
+                        Preinscripcion.cicloLectivo == str(destino.cicloLectivo),
+                    )
+                    .order_by(Preinscripcion.fechaCreacion.desc())
+                    .limit(1)
+                )
+                pre = db.exec(stmt_pre).first()
+
+                if pre:
+                    pre.estado = "Pendiente"
+                    db.add(pre)
+                else:
+                    db.add(
+                        Preinscripcion(
+                            idAlumno=item.idAlumno,
+                            CUE=cue,
+                            cicloLectivo=str(destino.cicloLectivo),
+                            estado="Pendiente",
+                        )
+                    )
+
+                id_insc_destino = None  # explícito
+
+            # Egresa/Baja: no crea destino ni preinscripción
+
+            # 5) Item del acta
             it = MovimientoPromocionItem(
                 idMovimiento=int(mov.idMovimiento),
                 idAlumno=int(item.idAlumno),
-                accion=str(item.accion),
+                accion=item.accion.value,  # ✅ "Promociona" | "Repite" | "Egresa" | "Baja"
                 idCursoOrigen=int(idCursoOrigen),
                 idCursoDestino=int(idCursoDestino),
                 idInscripcionOrigen=id_insc_origen,

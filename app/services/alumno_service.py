@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import Annotated
 from datetime import datetime, date
+from sqlalchemy.orm import aliased
 
 from fastapi import Query, HTTPException
 from typing import Optional
@@ -160,6 +161,8 @@ def get_alumnos_detalle_por_escuela(
 
     if not ciclo_lectivo:
         ciclo_lectivo = get_ciclo_actual()
+
+    # Responsable "principal"
     sub_resp = (
         select(
             Parentesco.idAlumno.label("idAlumno"),
@@ -169,6 +172,9 @@ def get_alumnos_detalle_por_escuela(
         .subquery()
     )
 
+    # =========================
+    # A) Alumnos CON curso (inscriptos activos en ese ciclo)
+    # =========================
     stmt = (
         select(
             Alumno,
@@ -187,16 +193,18 @@ def get_alumnos_detalle_por_escuela(
         )
         .where(Curso.CUE == cue)
         .where(Curso.cicloLectivo == ciclo_lectivo)
-        .where(Inscriptos.activo == True)
+        .where(Inscriptos.activo == True)  # noqa: E712
     )
 
     rows = db.exec(stmt).all()
 
-    out = []
+    out: list[AlumnoEscuelaDetallePublic] = []
+    ids_ya: set[int] = set()
 
     for alumno, curso, resp, parentesco in rows:
-        responsable_public = None
+        ids_ya.add(int(alumno.idAlumno))
 
+        responsable_public = None
         if resp:
             responsable_public = ResponsableMiniPublic(
                 idResponsable=resp.idResponsable,
@@ -219,6 +227,58 @@ def get_alumnos_detalle_por_escuela(
             )
         )
 
+    # =========================
+    # B) Alumnos SIN curso (preinscripción pendiente en ese ciclo)
+    # =========================
+    stmt_pre = (
+        select(
+            Alumno,
+            Responsable,
+            Parentesco.parentesco,
+        )
+        .join(Preinscripcion, Preinscripcion.idAlumno == Alumno.idAlumno)
+        .outerjoin(sub_resp, sub_resp.c.idAlumno == Alumno.idAlumno)
+        .outerjoin(Responsable, Responsable.idResponsable == sub_resp.c.idResponsable)
+        .outerjoin(
+            Parentesco,
+            (Parentesco.idAlumno == Alumno.idAlumno)
+            & (Parentesco.idResponsable == sub_resp.c.idResponsable),
+        )
+        .where(Preinscripcion.CUE == cue)
+        .where(Preinscripcion.cicloLectivo == ciclo_lectivo)
+        .where(Preinscripcion.estado == "Pendiente")
+    )
+
+    rows_pre = db.exec(stmt_pre).all()
+
+    for alumno, resp, parentesco in rows_pre:
+        if int(alumno.idAlumno) in ids_ya:
+            continue
+
+        responsable_public = None
+        if resp:
+            responsable_public = ResponsableMiniPublic(
+                idResponsable=resp.idResponsable,
+                nombre=resp.nombre,
+                apellido=resp.apellido,
+                parentesco=parentesco,
+                nro_celular=getattr(resp, "nro_celular", None),
+            )
+
+        out.append(
+            AlumnoEscuelaDetallePublic(
+                idAlumno=alumno.idAlumno,
+                nombre=alumno.nombre,
+                apellido=alumno.apellido,
+                dni=alumno.dni,
+                estado=getattr(alumno, "estado", "Activo") or "Activo",
+                idCurso=None,
+                nombreCurso="Sin asignar",
+                responsable=responsable_public,
+            )
+        )
+
+    out.sort(key=lambda x: ((x.apellido or "").lower(), (x.nombre or "").lower()))
     return out
 
 def get_alumno_detalle_por_id(
@@ -537,7 +597,7 @@ def get_timeline_alumno(db: SessionDep, id_alumno: int) -> list[dict]:
         })
     return timeline
 
-from sqlalchemy.orm import aliased
+
 
 def get_alumnos_historial_por_ciclo(
     db: SessionDep,
@@ -552,8 +612,8 @@ def get_alumnos_historial_por_ciclo(
     Devuelve matrícula por ciclo lectivo (una fila por alumno),
     tomando la ÚLTIMA inscripción del alumno en ese ciclo (evita duplicados por CambioCurso).
 
-    ✅ Además agrega:
-    - idCursoActual / cursoActualNombre: curso donde el alumno está ACTIVO hoy (en esa misma escuela CUE)
+    ✅ Además agrega alumnos SIN CURSO (Preinscripcion Pendiente) para ese CUE + ciclo,
+    devolviendo idCurso=0 y nombreCurso="Sin asignar".
     """
 
     # 1) subquery: última inscripción del alumno en ese ciclo (max idInscripcion)
@@ -569,7 +629,7 @@ def get_alumnos_historial_por_ciclo(
         .subquery()
     )
 
-    # ✅ 1b) subquery: inscripción ACTIVA actual del alumno en esa escuela (max idInscripcion con activo=True)
+    # 1b) subquery: inscripción ACTIVA actual del alumno en esa escuela (max idInscripcion con activo=True)
     sub_current_active = (
         select(
             Inscriptos.idAlumno.label("idAlumno"),
@@ -595,7 +655,7 @@ def get_alumnos_historial_por_ciclo(
     CursoActual = aliased(Curso)
     InscActual = aliased(Inscriptos)
 
-    # 3) query base
+    # 3) query base: alumnos con inscripción en el ciclo consultado
     stmt = (
         select(
             Alumno,
@@ -603,15 +663,12 @@ def get_alumnos_historial_por_ciclo(
             Inscriptos,
             Responsable,
             Parentesco.parentesco,
-
-            # ✅ extras
             CursoActual,
         )
         .join(sub_last_insc, sub_last_insc.c.idAlumno == Alumno.idAlumno)
         .join(Inscriptos, Inscriptos.idInscripcion == sub_last_insc.c.lastId)
         .join(Curso, Curso.idCurso == Inscriptos.idCurso)
 
-        # ✅ outerjoin a inscripción activa actual
         .outerjoin(sub_current_active, sub_current_active.c.idAlumno == Alumno.idAlumno)
         .outerjoin(InscActual, InscActual.idInscripcion == sub_current_active.c.currentId)
         .outerjoin(CursoActual, CursoActual.idCurso == InscActual.idCurso)
@@ -640,40 +697,14 @@ def get_alumnos_historial_por_ciclo(
             )
         )
 
-    # 4) total (para paginación) — NO cambia (cuenta por alumno en el ciclo)
-    stmt_total = (
-        select(func.count())
-        .select_from(Alumno)
-        .join(sub_last_insc, sub_last_insc.c.idAlumno == Alumno.idAlumno)
-        .join(Inscriptos, Inscriptos.idInscripcion == sub_last_insc.c.lastId)
-        .join(Curso, Curso.idCurso == Inscriptos.idCurso)
-        .where(Curso.CUE == cue)
-        .where(Curso.cicloLectivo == ciclo_lectivo)
-    )
-
-    if solo_activos:
-        stmt_total = stmt_total.where(Inscriptos.activo == True)  # noqa: E712
-    if q:
-        term = f"%{q.strip()}%"
-        stmt_total = stmt_total.where(
-            or_(
-                Alumno.nombre.ilike(term),
-                Alumno.apellido.ilike(term),
-                Alumno.dni.ilike(term),
-            )
-        )
-
-    total = int(db.exec(stmt_total).one())
-
-    # 5) page
-    rows = db.exec(
-        stmt.order_by(Alumno.apellido.asc(), Alumno.nombre.asc())
-        .offset(offset)
-        .limit(limit)
-    ).all()
+    rows = db.exec(stmt).all()
 
     items: list[AlumnoCicloRow] = []
+    ids_incluidos: set[int] = set()
+
     for alumno, curso, insc, resp, parentesco, curso_actual in rows:
+        ids_incluidos.add(int(alumno.idAlumno))
+
         responsable_public = None
         if resp:
             responsable_public = ResponsableMiniPublic(
@@ -693,7 +724,6 @@ def get_alumnos_historial_por_ciclo(
                 apellido=str(alumno.apellido),
                 dni=str(alumno.dni),
 
-                # curso del ciclo consultado
                 idCurso=int(curso.idCurso),
                 nombreCurso=f"{curso.nombre} {curso.division}".strip(),
 
@@ -701,7 +731,6 @@ def get_alumnos_historial_por_ciclo(
                 activoInscripcion=bool(insc.activo),
                 estadoInscripcion=insc.estado,
 
-                # ✅ curso actual (si existe)
                 idCursoActual=int(curso_actual.idCurso) if curso_actual else None,
                 cursoActualNombre=(f"{curso_actual.nombre} {curso_actual.division}".strip() if curso_actual else None),
 
@@ -709,4 +738,78 @@ def get_alumnos_historial_por_ciclo(
             )
         )
 
-    return AlumnoCicloPage(total=total, items=items)
+    # 4) EXTRA: alumnos sin curso (Preinscripcion Pendiente) en ese ciclo
+    #    Solo los agregamos cuando solo_activos=False (si pedís solo activos, no corresponde incluir preinscriptos).
+    if not solo_activos:
+        stmt_pre = (
+            select(Alumno, Responsable, Parentesco.parentesco)
+            .join(Preinscripcion, Preinscripcion.idAlumno == Alumno.idAlumno)
+
+            .outerjoin(sub_resp, sub_resp.c.idAlumno == Alumno.idAlumno)
+            .outerjoin(Responsable, Responsable.idResponsable == sub_resp.c.idResponsable)
+            .outerjoin(
+                Parentesco,
+                (Parentesco.idAlumno == Alumno.idAlumno)
+                & (Parentesco.idResponsable == sub_resp.c.idResponsable),
+            )
+            .where(Preinscripcion.CUE == cue)
+            .where(Preinscripcion.cicloLectivo == ciclo_lectivo)
+            .where(Preinscripcion.estado == "Pendiente")
+        )
+
+        if q:
+            term = f"%{q.strip()}%"
+            stmt_pre = stmt_pre.where(
+                or_(
+                    Alumno.nombre.ilike(term),
+                    Alumno.apellido.ilike(term),
+                    Alumno.dni.ilike(term),
+                )
+            )
+
+        rows_pre = db.exec(stmt_pre).all()
+
+        for alumno, resp, parentesco in rows_pre:
+            if int(alumno.idAlumno) in ids_incluidos:
+                continue
+
+            responsable_public = None
+            if resp:
+                responsable_public = ResponsableMiniPublic(
+                    idResponsable=int(resp.idResponsable),
+                    nombre=str(resp.nombre),
+                    apellido=str(resp.apellido),
+                    parentesco=parentesco,
+                    nro_celular=getattr(resp, "nro_celular", None),
+                    email=getattr(resp, "email", None),
+                    direccion=getattr(resp, "direccion", None),
+                )
+
+            items.append(
+                AlumnoCicloRow(
+                    idAlumno=int(alumno.idAlumno),
+                    nombre=str(alumno.nombre),
+                    apellido=str(alumno.apellido),
+                    dni=str(alumno.dni),
+
+                    idCurso=0,
+                    nombreCurso="Sin asignar",
+
+                    # como no hay inscripto en ese ciclo:
+                    idCursoActual=None,
+                    cursoActualNombre=None,
+
+                    estadoAlumno=str(getattr(alumno, "estado", "Activo") or "Activo"),
+                    activoInscripcion=False,
+                    estadoInscripcion=EstadoInscripcion.Activo,
+
+                    responsable=responsable_public,
+                )
+            )
+
+    # 5) ordenar + paginar
+    items.sort(key=lambda x: ((x.apellido or "").lower(), (x.nombre or "").lower()))
+    total = len(items)
+    paged = items[offset : offset + limit]
+
+    return AlumnoCicloPage(total=total, items=paged)
