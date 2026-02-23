@@ -86,6 +86,9 @@ def leer_timeline_alumno(id_alumno: int, db: SessionDep):
     """
     return inscriptos_service.get_timeline_alumno(db=db, id_alumno=id_alumno)
 
+@router.get("/alumno/{idAlumno}/auditoria")
+def auditoria_alumno(idAlumno: int, session: SessionDep, current_user: Usuario = Depends(get_current_user)):
+    return inscriptos_service.get_auditoria_alumno(db=session, idAlumno=idAlumno)
 
 @router.get("/auditoria-alumnos")
 def listar_auditoria_alumnos(cue: str, session: SessionDep, anio: str = None, accion: str = None):

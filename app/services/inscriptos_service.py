@@ -736,3 +736,85 @@ def get_auditoria_alumnos_detalle(
 
     auditoria.sort(key=lambda x: x["fecha"], reverse=True)
     return auditoria
+
+def get_auditoria_alumno(db: SessionDep, idAlumno: int) -> list[dict]:
+    from sqlalchemy.orm import aliased
+
+    _get_alumno_or_404(db, idAlumno)
+
+    CursoOrigen = aliased(Curso)
+    CursoDestino = aliased(Curso)
+
+    out: list[dict] = []
+
+    # 1) Movimientos (actas)
+    stmt = (
+        select(
+            MovimientoPromocion.fecha,
+            MovimientoPromocion.idMovimiento,
+            MovimientoPromocionItem.accion,
+            CursoOrigen.nombre.label("orig_nombre"),
+            CursoOrigen.division.label("orig_div"),
+            CursoOrigen.cicloLectivo.label("orig_ciclo"),
+            CursoDestino.nombre.label("dest_nombre"),
+            CursoDestino.division.label("dest_div"),
+            CursoDestino.cicloLectivo.label("dest_ciclo"),
+        )
+        .join(MovimientoPromocion, MovimientoPromocion.idMovimiento == MovimientoPromocionItem.idMovimiento)
+        .join(CursoOrigen, CursoOrigen.idCurso == MovimientoPromocionItem.idCursoOrigen)
+        .outerjoin(CursoDestino, CursoDestino.idCurso == MovimientoPromocionItem.idCursoDestino)
+        .where(MovimientoPromocion.estado == "Activo")
+        .where(MovimientoPromocionItem.idAlumno == idAlumno)
+        .order_by(desc(MovimientoPromocion.fecha), desc(MovimientoPromocion.idMovimiento))
+    )
+
+    rows = db.exec(stmt).all()
+    for r in rows:
+        curso_origen = _fmt_curso(r.orig_nombre, r.orig_div, r.orig_ciclo)
+        curso_dest = _fmt_curso(r.dest_nombre, r.dest_div, r.dest_ciclo) if r.dest_nombre else "—"
+
+        out.append({
+            "fecha": r.fecha,
+            "accion": str(r.accion),
+            "cursoOrigen": curso_origen,
+            "cursoDestino": curso_dest,
+            "idMovimiento": int(r.idMovimiento) if r.idMovimiento else None,
+        })
+
+    # 2) Cambios de curso (desde inscriptos)
+    stmt_cc = (
+        select(Inscriptos, Curso)
+        .join(Curso, Curso.idCurso == Inscriptos.idCurso)
+        .where(
+            Inscriptos.idAlumno == idAlumno,
+            Inscriptos.estado == EstadoInscripcion.CambioCurso,
+            Inscriptos.fechaBaja.is_not(None),
+        )
+        .order_by(desc(Inscriptos.fechaBaja), desc(Inscriptos.idInscripcion))
+    )
+
+    cambios = db.exec(stmt_cc).all()
+    for insc_origen, curso_origen in cambios:
+        destino = _buscar_destino_cambio_curso(
+            db=db,
+            idAlumno=idAlumno,
+            cicloLectivo=str(curso_origen.cicloLectivo),
+            fecha_desde=insc_origen.fechaBaja,
+            idCurso_origen=int(insc_origen.idCurso),
+        )
+
+        dest_txt = "—"
+        if destino:
+            _, curso_dest = destino
+            dest_txt = _fmt_curso(curso_dest.nombre, curso_dest.division, curso_dest.cicloLectivo)
+
+        out.append({
+            "fecha": insc_origen.fechaBaja,
+            "accion": "CambioCurso",
+            "cursoOrigen": _fmt_curso(curso_origen.nombre, curso_origen.division, curso_origen.cicloLectivo),
+            "cursoDestino": dest_txt,
+            "idMovimiento": None,
+        })
+
+    out.sort(key=lambda x: x["fecha"] or date.min, reverse=True)
+    return out
