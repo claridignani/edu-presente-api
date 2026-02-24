@@ -394,7 +394,6 @@ def add_alumno(db: SessionDep, alumno_in: AlumnoCreate, current_user):
     user_id = int(current_user.idUsuario)
 
     def _require_director_or_docente_role_in_cue(cue: str) -> Rol:
-        # Admin global pasa sin rol en CUE
         if _is_admin_global(db, user_id):
             return None  # type: ignore
 
@@ -402,7 +401,6 @@ def add_alumno(db: SessionDep, alumno_in: AlumnoCreate, current_user):
         if not rol:
             raise HTTPException(status_code=403, detail="No autorizado para esta escuela")
 
-        # SOLO Director o Docente pueden crear
         if rol.descripcion not in (RolDescripcion.Director, RolDescripcion.Docente):
             raise HTTPException(status_code=403, detail="Rol no autorizado para crear alumnos")
 
@@ -441,11 +439,9 @@ def add_alumno(db: SessionDep, alumno_in: AlumnoCreate, current_user):
     if not dni:
         raise HTTPException(status_code=400, detail="El DNI del alumno es obligatorio")
 
-    # NUEVO (reemplazar con esto):
     existente = get_alumno_by_dni(db, dni)
 
     if existente:
-        # Verificar que no tenga inscripción activa
         stmt_check = (
             select(Inscriptos)
             .where(Inscriptos.idAlumno == existente.idAlumno)
@@ -456,7 +452,6 @@ def add_alumno(db: SessionDep, alumno_in: AlumnoCreate, current_user):
                 status_code=400,
                 detail="El alumno ya tiene una inscripción activa en otra escuela"
             )
-        # Reutilizar alumno existente, saltar creación
         db_alumno = existente
     else:
         data = alumno_in.model_dump(exclude={"idCurso", "CUE", "cicloLectivo"})
@@ -481,7 +476,7 @@ def add_alumno(db: SessionDep, alumno_in: AlumnoCreate, current_user):
             select(Inscriptos).where(
                 Inscriptos.idCurso == alumno_in.idCurso,
                 Inscriptos.idAlumno == db_alumno.idAlumno,
-                Inscriptos.activo == True,  # si querés evitar duplicados activos
+                Inscriptos.activo == True,
             )
         ).first()
 
@@ -496,21 +491,28 @@ def add_alumno(db: SessionDep, alumno_in: AlumnoCreate, current_user):
         ciclo = _clean_str(getattr(alumno_in, "cicloLectivo", None))
 
         if cue and ciclo:
-            pre = Preinscripcion(
-                idAlumno=db_alumno.idAlumno,
-                CUE=cue,
-                cicloLectivo=ciclo,
-                estado="Pendiente",
-            )
-            db.add(pre)
-            db.commit()
+            # ✅ Solo crear si no existe ya una preinscripción pendiente
+            pre_existente = db.exec(
+                select(Preinscripcion).where(
+                    Preinscripcion.idAlumno == db_alumno.idAlumno,
+                    Preinscripcion.CUE == cue,
+                    Preinscripcion.cicloLectivo == ciclo,
+                    Preinscripcion.estado == "Pendiente",
+                )
+            ).first()
+
+            if not pre_existente:
+                pre = Preinscripcion(
+                    idAlumno=db_alumno.idAlumno,
+                    CUE=cue,
+                    cicloLectivo=ciclo,
+                    estado="Pendiente",
+                )
+                db.add(pre)
+                db.commit()
 
     db.refresh(db_alumno)
     return db_alumno
-
-
-
-
 
 # UPDATE (con validación DNI único)
 
