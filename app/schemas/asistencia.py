@@ -12,6 +12,8 @@ class AsistenciaEstado(str, Enum):
 class AsistenciaBase(SQLModel):
     estado: AsistenciaEstado = Field(...)
     lluvia: bool = Field(default=False)
+    wamid: str | None = Field(default=None)
+    motivo_ausencia: str | None = Field(default=None)
 
 
 class AsistenciaPublic(AsistenciaBase):
