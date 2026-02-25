@@ -1,13 +1,12 @@
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import HTTPException
 from app.core.config import VERSION, PHONE_NUMBER_ID, WHATSAPP_TOKEN
-from app.schemas.alumno import AlumnoPublic
-router = APIRouter()
+from sqlmodel import select
+from app.dependencies import SessionDep
+from app.models.asistencia import Asistencia
 
-URL = f"https://graph.facebook.com/{VERSION}/{PHONE_NUMBER_ID}/messages"
 
 async def enviar_plantilla_inasistencia(telefono: str, apellido: str, nombre: str, dni: str):
-    # 1. Verificá que PHONE_NUMBER_ID y WHATSAPP_TOKEN no sean None antes de seguir
     if not PHONE_NUMBER_ID or not WHATSAPP_TOKEN:
         raise HTTPException(status_code=500, detail="Falta configuración de WhatsApp en el servidor")
 
@@ -20,11 +19,11 @@ async def enviar_plantilla_inasistencia(telefono: str, apellido: str, nombre: st
     
     payload = {
         "messaging_product": "whatsapp",
-        "recipient_type": "individual", # Agregamos esto para mayor compatibilidad
-        "to": str(telefono).strip(), # Limpiamos espacios
+        "recipient_type": "individual", 
+        "to": str(telefono).strip(), 
         "type": "template",
         "template": {
-            "name": "inasistencia", # <-- ¡ASEGURATE QUE SEA EXACTAMENTE ASÍ EN META!
+            "name": "inasistencia",
             "language": {"code": "es_AR"},
             "components": [
                 {
@@ -43,9 +42,32 @@ async def enviar_plantilla_inasistencia(telefono: str, apellido: str, nombre: st
         response = await client.post(url_final, headers=headers, json=payload)
         
         if response.status_code != 200:
-            # Imprimimos el error exacto para debuguear
             print(f"DEBUG - Payload enviado: {payload}")
             print(f"Error de Meta: {response.text}")
             raise HTTPException(status_code=400, detail=f"Meta Error: {response.json()['error']['message']}")
             
-        return response.json()
+        # 3. Si todo salió bien (status 200), extraemos la data
+        data = response.json()
+        
+        # 4. Capturamos el wamid y lo retornamos
+        mensaje_id = data["messages"][0]["id"] 
+        print(f"Mensaje enviado con éxito. ID: {mensaje_id}")
+        
+        return mensaje_id
+    
+async def procesar_respuesta_padre(wamid: str, motivo: str, db: SessionDep):
+    """
+    Recibe el identificador del mensaje de Meta y el motivo seleccionado por el tutor.
+    Busca la inasistencia original y la actualiza en la base de datos.
+    """
+    statement = select(Asistencia).where(Asistencia.wamid == wamid)
+    inasistencia = db.exec(statement).first()
+    
+    if inasistencia:
+        inasistencia.motivo_ausencia = motivo
+        db.add(inasistencia)
+        db.commit()
+        
+        print(f"✅ ÉXITO: Motivo '{motivo}' registrado para la asistencia ID: {inasistencia.idAlumno}")
+    else:
+        print(f"⚠️ WAMID recibido pero no se encontró la inasistencia en la BD: {wamid}")

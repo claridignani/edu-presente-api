@@ -20,6 +20,7 @@ from app.services.alerta_service import (
 )
 from app.core.encryption import decrypt, hash_for_search
 
+from app.services.whatsapp_service import enviar_plantilla_inasistencia
 from collections import defaultdict
 from app.models.inscriptos import Inscriptos
 
@@ -62,9 +63,35 @@ def ensure_alumnos_exist(db: SessionDep, ids_alumnos: Iterable[int]):
 # Create / Upsert (uno)
 # ==========================
 
-def upsert_asistencia(db: SessionDep, payload: AsistenciaCreate) -> Asistencia:
+async def upsert_asistencia(db: SessionDep, payload: AsistenciaCreate) -> Asistencia:
+    """
+    Crea o actualiza (upsert) una asistencia por PK compuesta:
+    (idCurso, idAlumno, fecha)
+    """
     ensure_curso_exists(db, payload.idCurso)
     ensure_alumno_exists(db, payload.idAlumno)
+
+    if payload.estado == "Ausente":
+        alumno = db.get(Alumno, payload.idAlumno)
+        
+        if alumno and alumno.responsables:
+            telefono_destino = None
+            for responsable in alumno.responsables:
+                if responsable.nro_celular:
+                    telefono_destino = responsable.nro_celular
+                    break  
+            
+            if telefono_destino:
+                try:
+                    wamid_generado = await enviar_plantilla_inasistencia(
+                        telefono=telefono_destino,
+                        apellido=alumno.apellido,
+                        nombre=alumno.nombre,
+                        dni=alumno.dni
+                    )
+                    payload.wamid = wamid_generado 
+                except Exception as e:
+                    print(f"Error enviando WhatsApp al responsable de {alumno.nombre}: {e}")
 
     existente = get_one_asistencia(db, payload.idCurso, payload.idAlumno, payload.fecha)
 
