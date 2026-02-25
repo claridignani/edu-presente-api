@@ -102,13 +102,25 @@ def create_intervencion(
     )
 
 
+# ── MODIFICADO: ahora acepta desde, hasta y cursoIds ────────────────────────
 @router.get("/stats/riesgo", response_model=list[AlertaListItem])
 def get_alertas_riesgo(
     session: SessionDep,
     cue: str,
     _current_user: Usuario = Depends(require_access_to_cue_param(ALLOWED_ALERTAS)),
+    desde: Optional[date] = Query(default=None),
+    hasta: Optional[date] = Query(default=None),
+    cursoIds: Optional[list[int]] = Query(default=None),
 ):
+    """
+    Alertas activas (no archivadas) para una escuela.
+    Filtra opcionalmente por período (fechaInicioRacha) y cursos.
+    """
     return stats_alertas_activas_por_escuela(
         db=session,
         cue=cue,
+        desde=desde,
+        hasta=hasta,
+        curso_ids=cursoIds,
     )
+# ─────────────────────────────────────────────────────────────────────────────

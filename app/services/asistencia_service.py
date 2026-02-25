@@ -270,13 +270,13 @@ def stats_resumen(
     hasta: date,
     curso_ids: Optional[list[int]] = None,
     umbral_riesgo: int = 20,
+    solo_lluvia: Optional[bool] = None,
 ):
     """
     KPIs globales + Top cursos por ausentismo.
     Regla: "Tarde cuenta como Presente" (pero se reporta separado).
     """
-    where = _base_where(cue, desde, hasta, curso_ids)
-
+    where = _base_where(cue, desde, hasta, curso_ids, solo_lluvia)
     presentes_expr = case((Asistencia.estado.in_(["Presente", "Tarde"]), 1), else_=0)
     ausentes_expr = case((Asistencia.estado == "Ausente", 1), else_=0)
     tardes_expr = case((Asistencia.estado == "Tarde", 1), else_=0)
@@ -599,6 +599,7 @@ def stats_lluvia_comparativo(
         "lluvia": calc(True),
         "sinLluvia": calc(False),
     }
+
 def alertas_inasistencias_consecutivas(
     db: SessionDep,
     cue: str,
@@ -709,13 +710,14 @@ def stats_dias_semana(
     desde: date,
     hasta: date,
     curso_ids: Optional[list[int]] = None,
+    solo_lluvia: Optional[bool] = None,
 ):
     """
     Ausencias por día de la semana (SOLO Lunes a Viernes).
     Devuelve el día YA en español para el front.
     MySQL WEEKDAY(): 0=Lunes ... 6=Domingo
     """
-    where = _base_where(cue, desde, hasta, curso_ids)
+    where = _base_where(cue, desde, hasta, curso_ids, solo_lluvia)
 
     # solo ausentes
     where = list(where) + [Asistencia.estado == "Ausente"]
@@ -761,7 +763,7 @@ def get_alumnos_activos_de_curso(db: SessionDep, idCurso: int) -> list[int]:
         )
     )
     rows = db.exec(stmt).all()
-    # rows puede venir como [(1,), (2,)] o [1,2] según driver; lo normal en sqlmodel es lista de ints
+
     out: list[int] = []
     for r in rows:
         out.append(int(r[0] if isinstance(r, tuple) else r))
@@ -782,7 +784,10 @@ def upsert_asistencias_por_curso_fecha(
     """
     ids = get_alumnos_activos_de_curso(db, idCurso)
     if not ids:
-        raise HTTPException(status_code=400, detail="El curso no tiene alumnos activos para cargar asistencia")
+        raise HTTPException(
+            status_code=400,
+            detail="El curso no tiene alumnos activos para cargar asistencia",
+        )
 
     override_map: dict[int, tuple[AsistenciaEstado, bool | None]] = {
         int(idAlumno): (estado, lluv_individual)
@@ -893,3 +898,81 @@ def upsert_asistencias_por_curso_rango(
         total += len(buffer)
 
     return total
+
+import re as _re
+
+def stats_alumnos_por_rango(
+    db: SessionDep,
+    cue: str,
+    desde: date,
+    hasta: date,
+    rango: str,
+    curso_ids: Optional[list[int]] = None,
+) -> list[dict]:
+    """
+    Lista de alumnos con sus ausencias totales para un rango específico.
+    rango: "0-10" | "11-20" | "57+"
+    """
+
+    m_range = _re.match(r'^(\d+)-(\d+)$', rango)
+    m_plus  = _re.match(r'^(\d+)\+$', rango)
+
+    if m_range:
+        min_faltas = int(m_range.group(1))
+        max_faltas = int(m_range.group(2))
+    elif m_plus:
+        min_faltas = int(m_plus.group(1))
+        max_faltas = 999999
+    else:
+        return []
+
+    where = _base_where(cue, desde, hasta, curso_ids)
+    ausentes_expr = case((Asistencia.estado == "Ausente", 1), else_=0)
+
+    sub = (
+        select(
+            Asistencia.idAlumno.label("idAlumno"),
+            Asistencia.idCurso.label("idCurso"),
+            func.sum(ausentes_expr).label("faltas"),
+        )
+        .select_from(Asistencia, Curso)
+        .where(and_(*where))
+        .group_by(Asistencia.idAlumno, Asistencia.idCurso)
+        .subquery()
+    )
+
+    stmt = (
+        select(
+            sub.c.idAlumno,
+            sub.c.faltas,
+            Alumno.nombre,
+            Alumno.apellido,
+            Alumno.dni,
+            Curso.nombre.label("cursoNombre"),
+            Curso.division,
+            Curso.cicloLectivo,
+        )
+        .select_from(sub)
+        .join(Alumno, Alumno.idAlumno == sub.c.idAlumno)
+        .join(Curso, Curso.idCurso == sub.c.idCurso)
+        .where(
+            and_(
+                sub.c.faltas >= min_faltas,
+                sub.c.faltas <= max_faltas,
+            )
+        )
+        .order_by(sub.c.faltas.desc(), Alumno.apellido)
+    )
+
+    rows = db.exec(stmt).all()
+
+    return [
+        {
+            "idAlumno": r.idAlumno,
+            "nombre": f"{r.apellido}, {r.nombre}",
+            "dni": r.dni,
+            "curso": f"{r.cursoNombre} {r.division} ({r.cicloLectivo})",
+            "ausencias": int(r.faltas or 0),
+        }
+        for r in rows
+    ]

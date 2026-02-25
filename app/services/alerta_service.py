@@ -653,10 +653,17 @@ def create_alerta(db: SessionDep,payload: AlertaCreate,actor_user_id: int | None
 def stats_alertas_activas_por_escuela(
     db: SessionDep,
     cue: str,
+    desde: Optional[date] = None,
+    hasta: Optional[date] = None,
+    curso_ids: Optional[list[int]] = None,
 ):
     """
     Devuelve alertas activas (no archivadas y no resueltas)
     para usar como 'Alumnos en riesgo' en el panel del Director.
+
+    Filtros:
+    - desde/hasta: filtra por fechaInicioRacha (inicio de racha dentro del rango)
+    - curso_ids: filtra por cursos específicos
     """
 
     stmt = (
@@ -671,50 +678,59 @@ def stats_alertas_activas_por_escuela(
         )
         .select_from(Alerta, Alumno, Curso)
         .where(
-    and_(
-        Alerta.cue == cue,
-        Alerta.idAlumno == Alumno.idAlumno,
-        Alerta.idCurso == Curso.idCurso,
-        Alerta.archivada.is_(False),
-        Alerta.estado.in_(
-            [
-                EstadoAlerta.PENDIENTE,
-                EstadoAlerta.EN_PROCESO,
-                EstadoAlerta.CRITICO,
-            ]
+            and_(
+                Alerta.cue == cue,
+                Alerta.idAlumno == Alumno.idAlumno,
+                Alerta.idCurso == Curso.idCurso,
+                Alerta.archivada.is_(False),
+                Alerta.estado.in_(
+                    [
+                        EstadoAlerta.PENDIENTE,
+                        EstadoAlerta.EN_PROCESO,
+                        EstadoAlerta.CRITICO,
+                    ]
+                ),
+            )
         )
     )
-        )
-        .order_by(desc(Alerta.estado), desc(Alerta.created_at))
-    )
+
+    # ✅ Filtrar por período (racha inició dentro del rango)
+    if desde:
+        stmt = stmt.where(Alerta.fechaInicioRacha >= desde)
+    if hasta:
+        stmt = stmt.where(Alerta.fechaInicioRacha <= hasta)
+
+    # ✅ Filtrar por cursos
+    if curso_ids:
+        stmt = stmt.where(Alerta.idCurso.in_(curso_ids))
+
+    stmt = stmt.order_by(desc(Alerta.estado), desc(Alerta.created_at))
 
     rows = db.exec(stmt).all()
 
     out: list[AlertaListItem] = []
-
     for alerta, nom, ape, dni, cursoNom, div, ciclo in rows:
         curso_str = f"{cursoNom} {div} ({ciclo})".strip()
 
         out.append(
-    AlertaListItem(
-        idAlerta=int(alerta.idAlerta),
-        cue=alerta.cue,
-        idAlumno=int(alerta.idAlumno),
-        alumnoNombre=f"{ape}, {nom}",
-        alumnoDni=dni,
-        idCurso=int(alerta.idCurso),
-        created_at=alerta.created_at,
-        curso=curso_str,
-        motivo=alerta.motivo,
-        consecutivas=int(alerta.consecutivas),
-        fechaInicioRacha=alerta.fechaInicioRacha,
-        fechaFinRacha=alerta.fechaFinRacha,
-        detalle=getattr(alerta, "detalle", None),   # ✅ AQUI
-        estado=alerta.estado,
-        ultimaAccionAt=alerta.ultimaAccionAt,
-        archivada=bool(alerta.archivada),
-    )
-)
-
+            AlertaListItem(
+                idAlerta=int(alerta.idAlerta),
+                cue=alerta.cue,
+                idAlumno=int(alerta.idAlumno),
+                alumnoNombre=f"{ape}, {nom}",
+                alumnoDni=dni,
+                idCurso=int(alerta.idCurso),
+                created_at=alerta.created_at,
+                curso=curso_str,
+                motivo=alerta.motivo,
+                consecutivas=int(alerta.consecutivas),
+                fechaInicioRacha=alerta.fechaInicioRacha,
+                fechaFinRacha=alerta.fechaFinRacha,
+                detalle=getattr(alerta, "detalle", None),
+                estado=alerta.estado,
+                ultimaAccionAt=alerta.ultimaAccionAt,
+                archivada=bool(alerta.archivada),
+            )
+        )
 
     return out
