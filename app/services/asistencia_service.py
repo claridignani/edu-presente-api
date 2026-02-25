@@ -1,7 +1,7 @@
 # app/services/asistencia_service.py
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from typing import Annotated, Optional, Iterable
 
 from fastapi import HTTPException, Query
@@ -11,9 +11,9 @@ from sqlalchemy import func, case, and_
 from app.dependencies import SessionDep
 from app.models.asistencia import Asistencia
 from app.models.alumno import Alumno
-from app.models.curso import Curso  # ✅ necesario para filtrar por CUE (escuela)
+from app.models.curso import Curso  
 from app.services.curso_service import get_one_curso
-from app.schemas.asistencia import AsistenciaCreate
+from app.schemas.asistencia import AsistenciaCreate, AsistenciaEstado
 from app.services.alerta_service import (
     check_y_crear_alertas_consecutivas_para_curso_fecha,
     check_y_crear_alertas_tardanzas_para_curso_fecha,
@@ -747,3 +747,149 @@ def stats_dias_semana(
             out_map[wd] = int(r.ausentes or 0)
 
     return [{"dia": names_es[i], "ausentes": out_map[i]} for i in range(0, 5)]
+def get_alumnos_activos_de_curso(db: SessionDep, idCurso: int) -> list[int]:
+    """
+    Devuelve IDs de alumnos con inscripción ACTIVA en el curso.
+    """
+    ensure_curso_exists(db, idCurso)
+
+    stmt = (
+        select(Inscriptos.idAlumno)
+        .where(
+            Inscriptos.idCurso == idCurso,
+            Inscriptos.activo.is_(True),
+        )
+    )
+    rows = db.exec(stmt).all()
+    # rows puede venir como [(1,), (2,)] o [1,2] según driver; lo normal en sqlmodel es lista de ints
+    out: list[int] = []
+    for r in rows:
+        out.append(int(r[0] if isinstance(r, tuple) else r))
+    return out
+
+
+def upsert_asistencias_por_curso_fecha(
+    db: SessionDep,
+    idCurso: int,
+    fecha: date,
+    default_estado: AsistenciaEstado,
+    lluvia: bool,
+    overrides: list[tuple[int, AsistenciaEstado, bool | None]],
+) -> list[Asistencia]:
+    """
+    Crea/actualiza asistencia para TODOS los alumnos activos del curso en esa fecha.
+    default_estado + overrides (idAlumno -> estado).
+    """
+    ids = get_alumnos_activos_de_curso(db, idCurso)
+    if not ids:
+        raise HTTPException(status_code=400, detail="El curso no tiene alumnos activos para cargar asistencia")
+
+    override_map: dict[int, tuple[AsistenciaEstado, bool | None]] = {
+        int(idAlumno): (estado, lluv_individual)
+        for (idAlumno, estado, lluv_individual) in overrides
+    }
+
+    payloads: list[AsistenciaCreate] = []
+    for idAlumno in ids:
+        if idAlumno in override_map:
+            estado, lluv_individual = override_map[idAlumno]
+            payloads.append(
+                AsistenciaCreate(
+                    idCurso=idCurso,
+                    idAlumno=idAlumno,
+                    fecha=fecha,
+                    estado=estado,
+                    lluvia=(lluv_individual if lluv_individual is not None else lluvia),
+                )
+            )
+        else:
+            payloads.append(
+                AsistenciaCreate(
+                    idCurso=idCurso,
+                    idAlumno=idAlumno,
+                    fecha=fecha,
+                    estado=default_estado,
+                    lluvia=lluvia,
+                )
+            )
+
+    return upsert_asistencias_bulk(db=db, payloads=payloads)
+
+def upsert_asistencias_por_curso_rango(
+    db: SessionDep,
+    idCurso: int,
+    desde: date,
+    hasta: date,
+    weekdays: list[int],
+    default_estado: AsistenciaEstado,
+    lluvia: bool,
+    overrides: list[tuple[int, AsistenciaEstado, bool | None]],
+    solo_alumnos: list[int] | None = None,
+    chunk_size: int = 500,
+) -> int:
+    """
+    Carga asistencia para un curso en un rango de fechas (ej todo 2025).
+    Genera solo días cuyo weekday esté en weekdays (por defecto Lun–Vie).
+
+    Devuelve cantidad de registros upsert (aprox).
+    """
+    if hasta < desde:
+        raise HTTPException(status_code=400, detail="hasta no puede ser menor que desde")
+
+    # alumnos del curso
+    ids = get_alumnos_activos_de_curso(db, idCurso)
+    if solo_alumnos:
+        solo_set = set(int(x) for x in solo_alumnos)
+        ids = [i for i in ids if i in solo_set]
+
+    if not ids:
+        raise HTTPException(status_code=400, detail="No hay alumnos para cargar asistencia en este curso")
+
+    override_map: dict[int, tuple[AsistenciaEstado, bool | None]] = {
+        int(idAlumno): (estado, lluv_individual)
+        for (idAlumno, estado, lluv_individual) in overrides
+    }
+
+    # generar fechas
+    fechas: list[date] = []
+    d = desde
+    wset = set(int(x) for x in weekdays)
+    while d <= hasta:
+        if d.weekday() in wset:
+            fechas.append(d)
+        d += timedelta(days=1)
+
+    # construir payloads en chunks
+    buffer: list[AsistenciaCreate] = []
+    total = 0
+
+    for f in fechas:
+        for idAlumno in ids:
+            if idAlumno in override_map:
+                est, lluv_ind = override_map[idAlumno]
+                buffer.append(AsistenciaCreate(
+                    idCurso=idCurso,
+                    idAlumno=idAlumno,
+                    fecha=f,
+                    estado=est,
+                    lluvia=(lluv_ind if lluv_ind is not None else lluvia),
+                ))
+            else:
+                buffer.append(AsistenciaCreate(
+                    idCurso=idCurso,
+                    idAlumno=idAlumno,
+                    fecha=f,
+                    estado=default_estado,
+                    lluvia=lluvia,
+                ))
+
+            if len(buffer) >= chunk_size:
+                upsert_asistencias_bulk(db, buffer)
+                total += len(buffer)
+                buffer.clear()
+
+    if buffer:
+        upsert_asistencias_bulk(db, buffer)
+        total += len(buffer)
+
+    return total

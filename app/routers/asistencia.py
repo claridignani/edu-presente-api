@@ -2,10 +2,10 @@
 from datetime import date
 from typing import Annotated, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
 
 from app.dependencies import SessionDep
-from app.schemas.asistencia import AsistenciaCreate
+from app.schemas.asistencia import AsistenciaCreate, AsistenciaPublic
 from app.services.asistencia_service import (
     upsert_asistencia,
     upsert_asistencias_bulk,
@@ -20,10 +20,14 @@ from app.services.asistencia_service import (
     stats_riesgo_por_curso,
     stats_lluvia_comparativo,
     alertas_inasistencias_consecutivas,
-    stats_dias_semana
+    stats_dias_semana,
+    upsert_asistencias_por_curso_fecha,
+    upsert_asistencias_por_curso_rango
 )
 from app.services.whatsapp_service import enviar_plantilla_inasistencia
-
+from app.schemas.asistencia_bulk_curso import AsistenciaCursoFechaBulkRequest, AsistenciaCursoRangoBulkRequest
+from app.dependencies.auth import get_current_user
+from app.models.usuario import Usuario
 router = APIRouter(prefix="/asistencias", tags=["Asistencias"])
 
 
@@ -325,3 +329,42 @@ def read_asistencias_by_curso_fecha(
 async def registrar_asistencia(telefono: str,apellido: str, nombre: str, dni: str, session: SessionDep):
     await enviar_plantilla_inasistencia(telefono=telefono, apellido=apellido, nombre=nombre, dni=dni)
     return {"ok": True}
+
+@router.post("/cursos/{idCurso}/bulk-fecha", response_model=list[AsistenciaPublic])
+def cargar_asistencia_curso_bulk_fecha(
+    idCurso: int,
+    payload: AsistenciaCursoFechaBulkRequest,
+    session: SessionDep,
+    current_user: Usuario = Depends(get_current_user),
+):
+    overrides = [(o.idAlumno, o.estado, o.lluvia) for o in payload.overrides]
+
+    return upsert_asistencias_por_curso_fecha(
+        db=session,
+        idCurso=idCurso,
+        fecha=payload.fecha,
+        default_estado=payload.default_estado,
+        lluvia=payload.lluvia,
+        overrides=overrides,
+    )
+@router.post("/cursos/{idCurso}/bulk-rango")
+def cargar_asistencia_curso_bulk_rango(
+    idCurso: int,
+    payload: AsistenciaCursoRangoBulkRequest,
+    session: SessionDep,
+    current_user: Usuario = Depends(get_current_user),
+):
+    overrides = [(o.idAlumno, o.estado, o.lluvia) for o in payload.overrides]
+
+    total = upsert_asistencias_por_curso_rango(
+        db=session,
+        idCurso=idCurso,
+        desde=payload.desde,
+        hasta=payload.hasta,
+        weekdays=payload.weekdays,
+        default_estado=payload.default_estado,
+        lluvia=payload.lluvia,
+        overrides=overrides,
+        solo_alumnos=payload.solo_alumnos,
+    )
+    return {"ok": True, "registros": total}
