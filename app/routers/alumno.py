@@ -20,6 +20,7 @@ from app.services.alumno_service import (
     get_alumnos_detalle_by_curso,
     get_alumno_detalle_por_id,
     get_alumnos_historial_por_ciclo,
+    buscar_alumno_por_dni,
 )
 
 from app.services.parentesco_service import get_responsables_by_alumno
@@ -133,3 +134,11 @@ def alumnos_historial_por_ciclo(
         offset=offset,
         limit=limit,
     )
+
+@router.get("/buscar-por-dni/{dni}")
+def buscar_alumno_por_dni_endpoint(
+    dni: str,
+    session: SessionDep,
+    current_user: Usuario = Depends(get_current_user),
+):
+    return buscar_alumno_por_dni(db=session, dni=dni, current_user=current_user)

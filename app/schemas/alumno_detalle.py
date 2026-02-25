@@ -20,6 +20,6 @@ class AlumnoEscuelaDetallePublic(SQLModel):
     dni: str
     estado: str
     direccion: Optional[str] = None
-    idCurso: int
-    nombreCurso: str
+    idCurso: Optional[int] = None        
+    nombreCurso: Optional[str] = None    
     responsable: Optional[ResponsableMiniPublic] = None

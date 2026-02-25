@@ -95,7 +95,6 @@ def add_responsable(db: SessionDep, responsable_in: ResponsableCreate):
     email = _clean_email(responsable_in.email) or ""
     nro = _clean_str(responsable_in.nro_celular) or ""
     direccion = _clean_str(responsable_in.direccion) or ""
-    fecha_nacimiento = responsable_in.fecha_nacimiento
 
     # =========================
     # VALIDACIONES OBLIGATORIAS
@@ -106,8 +105,6 @@ def add_responsable(db: SessionDep, responsable_in: ResponsableCreate):
         raise HTTPException(status_code=400, detail="El nombre es obligatorio")
     if not apellido:
         raise HTTPException(status_code=400, detail="El apellido es obligatorio")
-    if not fecha_nacimiento:
-        raise HTTPException(status_code=400, detail="La fecha de nacimiento es obligatoria")
     if not email:
         raise HTTPException(status_code=400, detail="El email es obligatorio")
     if not nro:

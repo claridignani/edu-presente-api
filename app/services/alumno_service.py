@@ -10,6 +10,7 @@ from sqlalchemy import func, and_, desc, or_
 
 from app.dependencies import SessionDep
 from app.models.curso_docente import CursoDocente
+from app.models.escuela import Escuela  
 from app.models.rol import Rol 
 from app.schemas.rol import RolDescripcion, RolEstado
 from app.models.alumno import Alumno
@@ -393,7 +394,6 @@ def add_alumno(db: SessionDep, alumno_in: AlumnoCreate, current_user):
     user_id = int(current_user.idUsuario)
 
     def _require_director_or_docente_role_in_cue(cue: str) -> Rol:
-        # Admin global pasa sin rol en CUE
         if _is_admin_global(db, user_id):
             return None  # type: ignore
 
@@ -401,7 +401,6 @@ def add_alumno(db: SessionDep, alumno_in: AlumnoCreate, current_user):
         if not rol:
             raise HTTPException(status_code=403, detail="No autorizado para esta escuela")
 
-        # SOLO Director o Docente pueden crear
         if rol.descripcion not in (RolDescripcion.Director, RolDescripcion.Docente):
             raise HTTPException(status_code=403, detail="Rol no autorizado para crear alumnos")
 
@@ -441,21 +440,31 @@ def add_alumno(db: SessionDep, alumno_in: AlumnoCreate, current_user):
         raise HTTPException(status_code=400, detail="El DNI del alumno es obligatorio")
 
     existente = get_alumno_by_dni(db, dni)
+
     if existente:
-        raise HTTPException(status_code=400, detail="Ya existe un alumno con ese DNI")
+        stmt_check = (
+            select(Inscriptos)
+            .where(Inscriptos.idAlumno == existente.idAlumno)
+            .where(Inscriptos.activo == True)
+        )
+        if db.exec(stmt_check).first():
+            raise HTTPException(
+                status_code=400,
+                detail="El alumno ya tiene una inscripción activa en otra escuela"
+            )
+        db_alumno = existente
+    else:
+        data = alumno_in.model_dump(exclude={"idCurso", "CUE", "cicloLectivo"})
+        data["dni"] = dni
 
-    data = alumno_in.model_dump(exclude={"idCurso", "CUE", "cicloLectivo"})
-    data["dni"] = dni 
+        _require_not_empty(_clean_str(data.get("nombre")), "nombre")
+        _require_not_empty(_clean_str(data.get("apellido")), "apellido")
+        _require_not_empty(_clean_str(data.get("direccion")), "direccion")
 
-    _require_not_empty(_clean_str(data.get("nombre")), "nombre")
-    _require_not_empty(_clean_str(data.get("apellido")), "apellido")
-    _require_not_empty(_clean_str(data.get("direccion")), "direccion")
-
-    db_alumno = Alumno.model_validate(data)
-
-    db.add(db_alumno)
-    db.commit()
-    db.refresh(db_alumno)
+        db_alumno = Alumno.model_validate(data)
+        db.add(db_alumno)
+        db.commit()
+        db.refresh(db_alumno)
 
     # 1) Si viene curso => matrícula real (Inscriptos)
     if getattr(alumno_in, "idCurso", None) and alumno_in.idCurso and alumno_in.idCurso > 0:
@@ -467,7 +476,7 @@ def add_alumno(db: SessionDep, alumno_in: AlumnoCreate, current_user):
             select(Inscriptos).where(
                 Inscriptos.idCurso == alumno_in.idCurso,
                 Inscriptos.idAlumno == db_alumno.idAlumno,
-                Inscriptos.activo == True,  # si querés evitar duplicados activos
+                Inscriptos.activo == True,
             )
         ).first()
 
@@ -482,21 +491,28 @@ def add_alumno(db: SessionDep, alumno_in: AlumnoCreate, current_user):
         ciclo = _clean_str(getattr(alumno_in, "cicloLectivo", None))
 
         if cue and ciclo:
-            pre = Preinscripcion(
-                idAlumno=db_alumno.idAlumno,
-                CUE=cue,
-                cicloLectivo=ciclo,
-                estado="Pendiente",
-            )
-            db.add(pre)
-            db.commit()
+            # ✅ Solo crear si no existe ya una preinscripción pendiente
+            pre_existente = db.exec(
+                select(Preinscripcion).where(
+                    Preinscripcion.idAlumno == db_alumno.idAlumno,
+                    Preinscripcion.CUE == cue,
+                    Preinscripcion.cicloLectivo == ciclo,
+                    Preinscripcion.estado == "Pendiente",
+                )
+            ).first()
+
+            if not pre_existente:
+                pre = Preinscripcion(
+                    idAlumno=db_alumno.idAlumno,
+                    CUE=cue,
+                    cicloLectivo=ciclo,
+                    estado="Pendiente",
+                )
+                db.add(pre)
+                db.commit()
 
     db.refresh(db_alumno)
     return db_alumno
-
-
-
-
 
 # UPDATE (con validación DNI único)
 
@@ -771,3 +787,51 @@ def get_alumnos_historial_por_ciclo(
     paged = items[offset : offset + limit]
 
     return AlumnoCicloPage(total=total, items=paged)
+
+def buscar_alumno_por_dni(db: SessionDep, dni: str, current_user) -> dict:
+    user_id = int(current_user.idUsuario)
+
+    # Solo directores o admin global pueden usar esta búsqueda
+    if not _is_admin_global(db, user_id):
+        stmt_rol = (
+            select(Rol)
+            .where(Rol.idUsuario == user_id)
+            .where(Rol.estado == RolEstado.Activo)
+            .where(Rol.descripcion == RolDescripcion.Director)
+        )
+        if not db.exec(stmt_rol).first():
+            raise HTTPException(status_code=403, detail="Solo el Director puede buscar alumnos por DNI")
+
+    alumno = get_alumno_by_dni(db, dni.strip())
+    if not alumno:
+        raise HTTPException(status_code=404, detail="No existe ningún alumno con ese DNI")
+
+    # Verificar si tiene inscripción activa
+    stmt_insc = (
+        select(Inscriptos, Curso)
+        .join(Curso, Curso.idCurso == Inscriptos.idCurso)
+        .where(Inscriptos.idAlumno == alumno.idAlumno)
+        .where(Inscriptos.activo == True)
+        .limit(1)
+    )
+    row = db.exec(stmt_insc).first()
+
+    tiene_activa = row is not None
+    escuela_activa = None
+
+    if row:
+        insc, curso = row
+        # Buscar nombre de la escuela
+        from app.models.escuela import Escuela
+        escuela = db.exec(select(Escuela).where(Escuela.CUE == curso.CUE)).first()
+        escuela_activa = escuela.nombre if escuela else f"CUE {curso.CUE}"
+
+    return {
+        "idAlumno": alumno.idAlumno,
+        "nombre": alumno.nombre,
+        "apellido": alumno.apellido,
+        "dni": alumno.dni,
+        "fecha_nacimiento": str(alumno.fecha_nacimiento),
+        "tiene_inscripcion_activa": tiene_activa,
+        "escuela_activa": escuela_activa,
+    }

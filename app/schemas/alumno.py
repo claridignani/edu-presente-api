@@ -42,4 +42,11 @@ class AlumnoDetallePublic(SQLModel):
     estado: str
     responsable: Optional[ResponsableConParentescoPublic] = None
 
-
+class AlumnoBusquedaDniPublic(SQLModel):
+    idAlumno: int
+    nombre: str
+    apellido: str
+    dni: str
+    fecha_nacimiento: date
+    tiene_inscripcion_activa: bool
+    escuela_activa: Optional[str] = None  # nombre de la escuela donde está inscripto
