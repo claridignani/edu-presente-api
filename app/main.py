@@ -24,6 +24,13 @@ from app.routers.escuela_public import router as escuela_public_router
 from app.routers.invitacion_public import router as invitacion_public_router
 from app.routers.usuario_public import router as usuario_public_router
 
+import logging
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
+
 app = FastAPI()
 
 origins = [
@@ -33,7 +40,7 @@ origins = [
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
