@@ -1,4 +1,5 @@
 # app/services/parentesco_service.py
+from datetime import date
 from fastapi import HTTPException
 from sqlmodel import select
 
@@ -11,6 +12,7 @@ from app.schemas.parentesco import (
     ParentescoPublic,
     ResponsableConParentescoPublic,
 )
+from app.core.encryption import decrypt
 
 
 def upsert_parentesco(
@@ -19,23 +21,14 @@ def upsert_parentesco(
     idResponsable: int,
     parentesco: str,
 ) -> ParentescoPublic:
-    """
-    UPSERT reutilizable:
-    - valida Alumno y Responsable
-    - si existe vínculo (PK compuesta idAlumno,idResponsable) => actualiza parentesco
-    - si no existe => crea
-    """
-    # Validar alumno
     alumno = db.get(Alumno, idAlumno)
     if not alumno:
         raise HTTPException(status_code=404, detail="Alumno no encontrado")
 
-    # Validar responsable
     resp = db.get(Responsable, idResponsable)
     if not resp:
         raise HTTPException(status_code=404, detail="Responsable no encontrado")
 
-    # UPSERT
     rel = db.get(Parentesco, (idAlumno, idResponsable))
     if rel:
         rel.parentesco = parentesco
@@ -56,16 +49,25 @@ def upsert_parentesco(
 
 
 def add_parentesco(db: SessionDep, rel_in: ParentescoCreate) -> ParentescoPublic:
-    """
-    Mantiene compatibilidad con tu router actual:
-    POST /parentescos
-    """
     return upsert_parentesco(
         db=db,
         idAlumno=rel_in.idAlumno,
         idResponsable=rel_in.idResponsable,
         parentesco=rel_in.parentesco,
     )
+
+
+def _parse_fecha(valor: str | None) -> date | None:
+    """Desencripta y convierte a date. Devuelve None si está vacío o falla."""
+    if not valor:
+        return None
+    plain = decrypt(valor)
+    if not plain:
+        return None
+    try:
+        return date.fromisoformat(plain)
+    except (ValueError, TypeError):
+        return None
 
 
 def get_responsables_by_alumno(db: SessionDep, idAlumno: int) -> list[ResponsableConParentescoPublic]:
@@ -82,11 +84,11 @@ def get_responsables_by_alumno(db: SessionDep, idAlumno: int) -> list[Responsabl
             idResponsable=r.idResponsable,
             nombre=r.nombre,
             apellido=r.apellido,
-            dni=r.dni,
-            fecha_nacimiento=r.fecha_nacimiento,
+            dni=decrypt(r.dni) if r.dni else r.dni,
+            fecha_nacimiento=_parse_fecha(r.fecha_nacimiento),
             email=r.email,
             nro_celular=r.nro_celular,
-            direccion=r.direccion,
+            direccion=decrypt(r.direccion) if r.direccion else r.direccion,
             parentesco=parentesco,
         )
         for r, parentesco in rows

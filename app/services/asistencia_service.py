@@ -11,17 +11,18 @@ from sqlalchemy import func, case, and_
 from app.dependencies import SessionDep
 from app.models.asistencia import Asistencia
 from app.models.alumno import Alumno
-from app.models.curso import Curso  
+from app.models.curso import Curso
 from app.services.curso_service import get_one_curso
 from app.schemas.asistencia import AsistenciaCreate, AsistenciaEstado
 from app.services.alerta_service import (
     check_y_crear_alertas_consecutivas_para_curso_fecha,
     check_y_crear_alertas_tardanzas_para_curso_fecha,
 )
+from app.core.encryption import decrypt, hash_for_search
 
 from collections import defaultdict
-from datetime import timedelta
 from app.models.inscriptos import Inscriptos
+
 
 # ==========================
 # Helpers
@@ -46,10 +47,6 @@ def ensure_alumno_exists(db: SessionDep, idAlumno: int):
 
 
 def ensure_alumnos_exist(db: SessionDep, ids_alumnos: Iterable[int]):
-    """
-    Valida que todos los alumnos existan.
-    Evita N queries (una por alumno).
-    """
     ids = list({int(x) for x in ids_alumnos})
     if not ids:
         return
@@ -66,10 +63,6 @@ def ensure_alumnos_exist(db: SessionDep, ids_alumnos: Iterable[int]):
 # ==========================
 
 def upsert_asistencia(db: SessionDep, payload: AsistenciaCreate) -> Asistencia:
-    """
-    Crea o actualiza (upsert) una asistencia por PK compuesta:
-    (idCurso, idAlumno, fecha)
-    """
     ensure_curso_exists(db, payload.idCurso)
     ensure_alumno_exists(db, payload.idAlumno)
 
@@ -82,7 +75,6 @@ def upsert_asistencia(db: SessionDep, payload: AsistenciaCreate) -> Asistencia:
         db.commit()
         db.refresh(existente)
 
-        # ✅ Disparadores automáticos (también en update)
         if payload.estado in ("Ausente", "Tarde"):
             check_y_crear_alertas_consecutivas_para_curso_fecha(
                 db=db, idCurso=existente.idCurso, fecha=existente.fecha, min_consecutivas=3
@@ -98,24 +90,18 @@ def upsert_asistencia(db: SessionDep, payload: AsistenciaCreate) -> Asistencia:
     db.commit()
     db.refresh(nueva)
 
-    # ✅ Disparadores automáticos (insert)
     if payload.estado in ("Ausente", "Tarde"):
         check_y_crear_alertas_consecutivas_para_curso_fecha(db=db, idCurso=nueva.idCurso, fecha=nueva.fecha, min_consecutivas=3)
         check_y_crear_alertas_tardanzas_para_curso_fecha(db=db, idCurso=nueva.idCurso, fecha=nueva.fecha, umbral=3)
 
     return nueva
 
+
 # ==========================
-# Bulk Upsert (recomendado)
+# Bulk Upsert
 # ==========================
 
 def upsert_asistencias_bulk(db: SessionDep, payloads: list[AsistenciaCreate]) -> list[Asistencia]:
-    """
-    Upsert masivo en una sola transacción.
-    - Valida curso una vez por cada idCurso presente.
-    - Valida alumnos en lote.
-    - Hace commit 1 vez.
-    """
     if not payloads:
         return []
 
@@ -157,11 +143,7 @@ def upsert_asistencias_bulk(db: SessionDep, payloads: list[AsistenciaCreate]) ->
 # ==========================
 
 def get_asistencias_by_curso_fecha(db: SessionDep, idCurso: int, fecha: date):
-    """
-    Devuelve todas las asistencias registradas para un curso en una fecha.
-    """
     ensure_curso_exists(db, idCurso)
-
     stmt = select(Asistencia).where(
         Asistencia.idCurso == idCurso,
         Asistencia.fecha == fecha,
@@ -170,11 +152,7 @@ def get_asistencias_by_curso_fecha(db: SessionDep, idCurso: int, fecha: date):
 
 
 def get_asistencias_by_curso(db: SessionDep, idCurso: int, offset: int, limit: Annotated[int, Query(le=200)]):
-    """
-    Historial de asistencias de un curso (todas las fechas).
-    """
     ensure_curso_exists(db, idCurso)
-
     stmt = (
         select(Asistencia)
         .where(Asistencia.idCurso == idCurso)
@@ -186,11 +164,7 @@ def get_asistencias_by_curso(db: SessionDep, idCurso: int, offset: int, limit: A
 
 
 def get_asistencias_by_alumno(db: SessionDep, idAlumno: int, offset: int = 0, limit: int = 200):
-    """
-    Historial de asistencias de un alumno (todas las fechas, todos los cursos).
-    """
     ensure_alumno_exists(db, idAlumno)
-
     stmt = (
         select(Asistencia)
         .where(Asistencia.idAlumno == idAlumno)
@@ -209,10 +183,6 @@ def get_asistencias_by_curso_alumno(
     offset: int = 0,
     limit: int = 200,
 ):
-    """
-    Historial de asistencias para un alumno dentro de un curso.
-    (Opcional) filtra por año.
-    """
     ensure_curso_exists(db, idCurso)
     ensure_alumno_exists(db, idAlumno)
 
@@ -226,11 +196,7 @@ def get_asistencias_by_curso_alumno(
         hasta = date(anio, 12, 31)
         stmt = stmt.where(Asistencia.fecha >= desde, Asistencia.fecha <= hasta)
 
-    stmt = (
-        stmt.order_by(desc(Asistencia.fecha))
-        .offset(offset)
-        .limit(limit)
-    )
+    stmt = stmt.order_by(desc(Asistencia.fecha)).offset(offset).limit(limit)
     return db.exec(stmt).all()
 
 
@@ -245,14 +211,11 @@ def _base_where(
     curso_ids: Optional[list[int]] = None,
     solo_lluvia: Optional[bool] = None,
 ):
-    """
-    Filtros base. Filtramos por escuela via Curso.CUE y join por idCurso.
-    """
     filters = [
         Curso.CUE == cue,
         Asistencia.fecha >= desde,
         Asistencia.fecha <= hasta,
-        Asistencia.idCurso == Curso.idCurso,  # join
+        Asistencia.idCurso == Curso.idCurso,
     ]
     if curso_ids:
         filters.append(Asistencia.idCurso.in_(curso_ids))
@@ -272,10 +235,6 @@ def stats_resumen(
     umbral_riesgo: int = 20,
     solo_lluvia: Optional[bool] = None,
 ):
-    """
-    KPIs globales + Top cursos por ausentismo.
-    Regla: "Tarde cuenta como Presente" (pero se reporta separado).
-    """
     where = _base_where(cue, desde, hasta, curso_ids, solo_lluvia)
     presentes_expr = case((Asistencia.estado.in_(["Presente", "Tarde"]), 1), else_=0)
     ausentes_expr = case((Asistencia.estado == "Ausente", 1), else_=0)
@@ -302,7 +261,6 @@ def stats_resumen(
 
     asistencia_pct = round((presentes / total) * 100, 2) if total else 0.0
 
-    # Riesgo global (alumnos con >= umbral ausencias)
     sub = (
         select(
             Asistencia.idAlumno.label("idAlumno"),
@@ -316,7 +274,7 @@ def stats_resumen(
 
     alumnos_riesgo = int(db.exec(select(func.count()).select_from(sub).where(sub.c.faltas >= umbral_riesgo)).one() or 0)
     riesgo_pct = round((alumnos_riesgo / alumnos_distintos) * 100, 2) if alumnos_distintos else 0.0
-        # ✅ Total alumnos de la escuela (matrícula activa por inscriptos)
+
     stmt_total_alumnos = (
         select(func.count(func.distinct(Inscriptos.idAlumno)))
         .select_from(Inscriptos, Curso)
@@ -330,7 +288,6 @@ def stats_resumen(
     )
     total_alumnos_escuela = int(db.exec(stmt_total_alumnos).one() or 0)
 
-    # Top cursos por % ausentes
     stmt_cursos = (
         select(
             Curso.idCurso,
@@ -376,7 +333,6 @@ def stats_resumen(
             "alumnosRiesgo": alumnos_riesgo,
             "riesgoPct": riesgo_pct,
             "totalAlumnosEscuela": total_alumnos_escuela,
-
         },
         "topCursosAusentismo": cursos_out[:5],
     }
@@ -391,10 +347,6 @@ def stats_serie(
     curso_ids: Optional[list[int]] = None,
     solo_lluvia: Optional[bool] = None,
 ):
-    """
-    Serie temporal agrupada por day/week/month.
-    MySQL: usamos DATE_FORMAT.
-    """
     where = _base_where(cue, desde, hasta, curso_ids, solo_lluvia)
 
     presentes_expr = case((Asistencia.estado.in_(["Presente", "Tarde"]), 1), else_=0)
@@ -449,11 +401,6 @@ def stats_distribucion_inasistencias(
     curso_ids: Optional[list[int]] = None,
     buckets: Optional[list[tuple[int, int | None]]] = None,
 ):
-    """
-    Distribución de ALUMNOS por rangos de AUSENCIAS (solo 'Ausente').
-    Por defecto:
-      0-10, 11-20, 21-30, 31-44, 45-56, 57+
-    """
     if buckets is None:
         buckets = [(0, 10), (11, 20), (21, 30), (31, 44), (45, 56), (57, None)]
 
@@ -497,9 +444,6 @@ def stats_riesgo_por_curso(
     umbral: int = 20,
     curso_ids: Optional[list[int]] = None,
 ):
-    """
-    Para cada curso: cuántos alumnos tienen >= umbral AUSENCIAS.
-    """
     where = _base_where(cue, desde, hasta, curso_ids)
     ausentes_expr = case((Asistencia.estado == "Ausente", 1), else_=0)
 
@@ -553,12 +497,6 @@ def stats_lluvia_comparativo(
     hasta: date,
     curso_ids: Optional[list[int]] = None,
 ):
-    """
-    Comparativo lluvia vs sin lluvia:
-    - asistenciaPct
-    - ausentismoPct
-    - tardes (separado)
-    """
     def calc(solo_lluvia: bool):
         where = _base_where(cue, desde, hasta, curso_ids, solo_lluvia=solo_lluvia)
 
@@ -583,22 +521,17 @@ def stats_lluvia_comparativo(
         aus = int(r.ausentes or 0)
         tar = int(r.tardes or 0)
 
-        asistencia_pct = round((pres / total) * 100, 2) if total else 0.0
-        ausentismo_pct = round((aus / total) * 100, 2) if total else 0.0
-
         return {
             "total": total,
             "presentes": pres,
             "ausentes": aus,
             "tardes": tar,
-            "asistenciaPct": asistencia_pct,
-            "ausentismoPct": ausentismo_pct,
+            "asistenciaPct": round((pres / total) * 100, 2) if total else 0.0,
+            "ausentismoPct": round((aus / total) * 100, 2) if total else 0.0,
         }
 
-    return {
-        "lluvia": calc(True),
-        "sinLluvia": calc(False),
-    }
+    return {"lluvia": calc(True), "sinLluvia": calc(False)}
+
 
 def alertas_inasistencias_consecutivas(
     db: SessionDep,
@@ -607,16 +540,6 @@ def alertas_inasistencias_consecutivas(
     hasta: date,
     min_consecutivas: int = 3,
 ):
-    """
-    Devuelve alertas por rachas de AUSENTE consecutivas (>= min_consecutivas)
-    dentro del rango [desde, hasta], filtrando por escuela (Curso.CUE).
-    
-    ⚠️ Definición de "consecutivas":
-    - Se consideran consecutivas por FECHA CALENDARIO (diferencia de 1 día).
-    - Si querés que "finde no corte la racha", lo ajustamos (te lo dejo listo para cambiar).
-    """
-
-    # Traemos asistencias del rango para la escuela + datos del alumno y curso
     stmt = (
         select(
             Asistencia.idAlumno,
@@ -625,7 +548,7 @@ def alertas_inasistencias_consecutivas(
             Asistencia.estado,
             Alumno.nombre,
             Alumno.apellido,
-            Alumno.dni, 
+            Alumno.dni,
             Curso.nombre.label("cursoNombre"),
             Curso.division,
             Curso.cicloLectivo,
@@ -645,7 +568,6 @@ def alertas_inasistencias_consecutivas(
 
     rows = db.exec(stmt).all()
 
-    # Agrupar por alumno+curso
     por_key = defaultdict(list)
     for r in rows:
         por_key[(r.idAlumno, r.idCurso)].append(r)
@@ -653,21 +575,18 @@ def alertas_inasistencias_consecutivas(
     alertas = []
 
     for (idAlumno, idCurso), items in por_key.items():
-        # Calcular rachas consecutivas de AUSENTE
         streak = 0
         best_streak = 0
         best_end = None
-
         prev_fecha = None
 
         for it in items:
-            # si querés que fines de semana NO corten, cambiamos esta lógica
             is_consecutive_day = (
                 prev_fecha is None or (it.fecha - prev_fecha) == timedelta(days=1)
             )
 
             if not is_consecutive_day:
-                streak = 0  # se corta por hueco de fechas
+                streak = 0
 
             if it.estado == "Ausente":
                 streak += 1
@@ -675,13 +594,11 @@ def alertas_inasistencias_consecutivas(
                     best_streak = streak
                     best_end = it.fecha
             else:
-                # presente/tarde/otro corta la racha
                 streak = 0
 
             prev_fecha = it.fecha
 
         if best_streak >= min_consecutivas and best_end is not None:
-            # Tomamos info del último registro (tiene nombre/curso ya)
             last = items[-1]
             alumno_nombre = f"{last.apellido}, {last.nombre}"
             curso_str = f"{last.cursoNombre} {last.division} ({last.cicloLectivo})"
@@ -691,7 +608,7 @@ def alertas_inasistencias_consecutivas(
                     "idAlumno": idAlumno,
                     "idCurso": idCurso,
                     "alumnoNombre": alumno_nombre,
-                    "dni": last.dni, 
+                    "dni": decrypt(last.dni) if last.dni else last.dni,   # ← FIX
                     "curso": curso_str,
                     "fechaFinRacha": str(best_end),
                     "consecutivas": int(best_streak),
@@ -700,9 +617,9 @@ def alertas_inasistencias_consecutivas(
                 }
             )
 
-    # Orden: más graves primero, y más recientes arriba
     alertas.sort(key=lambda x: (x["consecutivas"], x["fechaFinRacha"]), reverse=True)
     return alertas
+
 
 def stats_dias_semana(
     db: SessionDep,
@@ -712,23 +629,13 @@ def stats_dias_semana(
     curso_ids: Optional[list[int]] = None,
     solo_lluvia: Optional[bool] = None,
 ):
-    """
-    Ausencias por día de la semana (SOLO Lunes a Viernes).
-    Devuelve el día YA en español para el front.
-    MySQL WEEKDAY(): 0=Lunes ... 6=Domingo
-    """
     where = _base_where(cue, desde, hasta, curso_ids, solo_lluvia)
-
-    # solo ausentes
     where = list(where) + [Asistencia.estado == "Ausente"]
 
     weekday_num = func.weekday(Asistencia.fecha).label("weekday_num")
 
     stmt = (
-        select(
-            weekday_num,
-            func.count().label("ausentes"),
-        )
+        select(weekday_num, func.count().label("ausentes"))
         .select_from(Asistencia, Curso)
         .where(and_(*where))
         .group_by(weekday_num)
@@ -736,38 +643,26 @@ def stats_dias_semana(
     )
 
     rows = db.exec(stmt).all()
-
-    # Lun-Vie en español
     names_es = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
-
-    # inicializamos lunes-viernes en 0
     out_map = {i: 0 for i in range(0, 5)}
 
     for r in rows:
         wd = int(r.weekday_num)
-        if 0 <= wd <= 4:  # ✅ Lun-Vie
+        if 0 <= wd <= 4:
             out_map[wd] = int(r.ausentes or 0)
 
     return [{"dia": names_es[i], "ausentes": out_map[i]} for i in range(0, 5)]
+
+
 def get_alumnos_activos_de_curso(db: SessionDep, idCurso: int) -> list[int]:
-    """
-    Devuelve IDs de alumnos con inscripción ACTIVA en el curso.
-    """
     ensure_curso_exists(db, idCurso)
 
     stmt = (
         select(Inscriptos.idAlumno)
-        .where(
-            Inscriptos.idCurso == idCurso,
-            Inscriptos.activo.is_(True),
-        )
+        .where(Inscriptos.idCurso == idCurso, Inscriptos.activo.is_(True))
     )
     rows = db.exec(stmt).all()
-
-    out: list[int] = []
-    for r in rows:
-        out.append(int(r[0] if isinstance(r, tuple) else r))
-    return out
+    return [int(r[0] if isinstance(r, tuple) else r) for r in rows]
 
 
 def upsert_asistencias_por_curso_fecha(
@@ -778,10 +673,6 @@ def upsert_asistencias_por_curso_fecha(
     lluvia: bool,
     overrides: list[tuple[int, AsistenciaEstado, bool | None]],
 ) -> list[Asistencia]:
-    """
-    Crea/actualiza asistencia para TODOS los alumnos activos del curso en esa fecha.
-    default_estado + overrides (idAlumno -> estado).
-    """
     ids = get_alumnos_activos_de_curso(db, idCurso)
     if not ids:
         raise HTTPException(
@@ -798,27 +689,19 @@ def upsert_asistencias_por_curso_fecha(
     for idAlumno in ids:
         if idAlumno in override_map:
             estado, lluv_individual = override_map[idAlumno]
-            payloads.append(
-                AsistenciaCreate(
-                    idCurso=idCurso,
-                    idAlumno=idAlumno,
-                    fecha=fecha,
-                    estado=estado,
-                    lluvia=(lluv_individual if lluv_individual is not None else lluvia),
-                )
-            )
+            payloads.append(AsistenciaCreate(
+                idCurso=idCurso, idAlumno=idAlumno, fecha=fecha,
+                estado=estado,
+                lluvia=(lluv_individual if lluv_individual is not None else lluvia),
+            ))
         else:
-            payloads.append(
-                AsistenciaCreate(
-                    idCurso=idCurso,
-                    idAlumno=idAlumno,
-                    fecha=fecha,
-                    estado=default_estado,
-                    lluvia=lluvia,
-                )
-            )
+            payloads.append(AsistenciaCreate(
+                idCurso=idCurso, idAlumno=idAlumno, fecha=fecha,
+                estado=default_estado, lluvia=lluvia,
+            ))
 
     return upsert_asistencias_bulk(db=db, payloads=payloads)
+
 
 def upsert_asistencias_por_curso_rango(
     db: SessionDep,
@@ -832,16 +715,9 @@ def upsert_asistencias_por_curso_rango(
     solo_alumnos: list[int] | None = None,
     chunk_size: int = 500,
 ) -> int:
-    """
-    Carga asistencia para un curso en un rango de fechas (ej todo 2025).
-    Genera solo días cuyo weekday esté en weekdays (por defecto Lun–Vie).
-
-    Devuelve cantidad de registros upsert (aprox).
-    """
     if hasta < desde:
         raise HTTPException(status_code=400, detail="hasta no puede ser menor que desde")
 
-    # alumnos del curso
     ids = get_alumnos_activos_de_curso(db, idCurso)
     if solo_alumnos:
         solo_set = set(int(x) for x in solo_alumnos)
@@ -855,7 +731,6 @@ def upsert_asistencias_por_curso_rango(
         for (idAlumno, estado, lluv_individual) in overrides
     }
 
-    # generar fechas
     fechas: list[date] = []
     d = desde
     wset = set(int(x) for x in weekdays)
@@ -864,7 +739,6 @@ def upsert_asistencias_por_curso_rango(
             fechas.append(d)
         d += timedelta(days=1)
 
-    # construir payloads en chunks
     buffer: list[AsistenciaCreate] = []
     total = 0
 
@@ -873,19 +747,14 @@ def upsert_asistencias_por_curso_rango(
             if idAlumno in override_map:
                 est, lluv_ind = override_map[idAlumno]
                 buffer.append(AsistenciaCreate(
-                    idCurso=idCurso,
-                    idAlumno=idAlumno,
-                    fecha=f,
+                    idCurso=idCurso, idAlumno=idAlumno, fecha=f,
                     estado=est,
                     lluvia=(lluv_ind if lluv_ind is not None else lluvia),
                 ))
             else:
                 buffer.append(AsistenciaCreate(
-                    idCurso=idCurso,
-                    idAlumno=idAlumno,
-                    fecha=f,
-                    estado=default_estado,
-                    lluvia=lluvia,
+                    idCurso=idCurso, idAlumno=idAlumno, fecha=f,
+                    estado=default_estado, lluvia=lluvia,
                 ))
 
             if len(buffer) >= chunk_size:
@@ -899,6 +768,7 @@ def upsert_asistencias_por_curso_rango(
 
     return total
 
+
 import re as _re
 
 def stats_alumnos_por_rango(
@@ -909,11 +779,6 @@ def stats_alumnos_por_rango(
     rango: str,
     curso_ids: Optional[list[int]] = None,
 ) -> list[dict]:
-    """
-    Lista de alumnos con sus ausencias totales para un rango específico.
-    rango: "0-10" | "11-20" | "57+"
-    """
-
     m_range = _re.match(r'^(\d+)-(\d+)$', rango)
     m_plus  = _re.match(r'^(\d+)\+$', rango)
 
@@ -955,12 +820,7 @@ def stats_alumnos_por_rango(
         .select_from(sub)
         .join(Alumno, Alumno.idAlumno == sub.c.idAlumno)
         .join(Curso, Curso.idCurso == sub.c.idCurso)
-        .where(
-            and_(
-                sub.c.faltas >= min_faltas,
-                sub.c.faltas <= max_faltas,
-            )
-        )
+        .where(and_(sub.c.faltas >= min_faltas, sub.c.faltas <= max_faltas))
         .order_by(sub.c.faltas.desc(), Alumno.apellido)
     )
 
@@ -970,7 +830,7 @@ def stats_alumnos_por_rango(
         {
             "idAlumno": r.idAlumno,
             "nombre": f"{r.apellido}, {r.nombre}",
-            "dni": r.dni,
+            "dni": decrypt(r.dni) if r.dni else r.dni,       # ← FIX
             "curso": f"{r.cursoNombre} {r.division} ({r.cicloLectivo})",
             "ausencias": int(r.faltas or 0),
         }

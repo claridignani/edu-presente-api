@@ -12,11 +12,12 @@ class Usuario(SQLModel, table=True):
     __tablename__ = "usuario"
 
     idUsuario: Optional[int] = Field(default=None, primary_key=True)
-    dni: str = Field(index=True, max_length=8)
-    cuil: str = Field(index=True, max_length=11)
-    celular: str = Field(max_length=15)
+    dni: str = Field(index=True, max_length=255)        # ampliado para texto encriptado
+    dni_hash: str = Field(default="", index=True, max_length=64)
+    cuil: str = Field(index=True, max_length=255)       # ampliado para texto encriptado
+    celular: str = Field(max_length=15)                 # no se encripta
     mailABC: str = Field(index=True, unique=True, max_length=255)
-    fechaNacimiento: Optional[date] = None
+    fechaNacimiento: Optional[str] = None               # str porque se guarda encriptado
     nombre: str = Field(max_length=100)
     apellido: str = Field(max_length=100)
     contrasena: str = Field(max_length=255)

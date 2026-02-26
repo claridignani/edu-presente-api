@@ -19,6 +19,7 @@ from app.schemas.alerta import AlertaListItem, AlertaPatch, AlertaCreate
 from app.schemas.intervencion import IntervencionCreate, IntervencionPublic
 from app.models.usuario import Usuario
 from app.models.rol import Rol
+from app.core.encryption import decrypt, hash_for_search
 
 
 # -----------------------------
@@ -42,20 +43,14 @@ def _tags_from_db(tags: str | None) -> list[str] | None:
 
 
 # -----------------------------
-# ✅ Snapshot actor (nombre + rol) para auditoría
+# Snapshot actor (nombre + rol) para auditoría
 # -----------------------------
 def _actor_snapshot(db: SessionDep, actor_id: int | None, cue: str) -> tuple[str | None, str | None]:
-    """
-    Devuelve (actor_nombre, actor_rol) para guardar snapshot.
-    actor_nombre: "Apellido, Nombre"
-    actor_rol: "Asistente" | "Director" | "Docente" | "Administrador"
-    """
     if not actor_id:
         return (None, None)
 
     cue_norm = (cue or "").strip()
 
-    # Usuario
     u = db.get(Usuario, int(actor_id))
     actor_nombre = None
     if u:
@@ -63,14 +58,13 @@ def _actor_snapshot(db: SessionDep, actor_id: int | None, cue: str) -> tuple[str
         nom = (u.nombre or "").strip()
         actor_nombre = f"{ape}, {nom}".strip(", ").strip() or None
 
-    # Rol por CUE
     stmt = select(Rol).where(Rol.idUsuario == int(actor_id), Rol.CUE == cue_norm).limit(1)
     r = db.exec(stmt).first()
 
     actor_rol = None
     if r:
-        desc = getattr(r, "descripcion", None)
-        actor_rol = desc.value if hasattr(desc, "value") else (str(desc) if desc else None)
+        desc_val = getattr(r, "descripcion", None)
+        actor_rol = desc_val.value if hasattr(desc_val, "value") else (str(desc_val) if desc_val else None)
 
     return (actor_nombre, actor_rol)
 
@@ -86,8 +80,7 @@ def _ultimas_fechas_clase(db: SessionDep, idCurso: int, hasta: date, n: int) -> 
         .order_by(desc(Asistencia.fecha))
         .limit(n)
     )
-    fechas = db.exec(stmt).all()
-    return list(fechas)
+    return list(db.exec(stmt).all())
 
 
 def list_intervenciones(db: SessionDep, idAlerta: int) -> list[IntervencionPublic]:
@@ -179,7 +172,7 @@ def _ya_existe_alerta_activa_motivo(db: SessionDep, cue: str, idCurso: int, idAl
 
 
 # -----------------------------
-# ✅ Generación automática (enganchar desde upsert)
+# Generación automática
 # -----------------------------
 def check_y_crear_alertas_consecutivas_para_curso_fecha(
     db: SessionDep,
@@ -192,7 +185,6 @@ def check_y_crear_alertas_consecutivas_para_curso_fecha(
         return
 
     cue = curso.CUE
-
     ult_fechas = _ultimas_fechas_clase(db, idCurso=idCurso, hasta=fecha, n=min_consecutivas)
     if len(ult_fechas) < min_consecutivas:
         return
@@ -201,13 +193,7 @@ def check_y_crear_alertas_consecutivas_para_curso_fecha(
 
     stmt_ausentes_hoy = (
         select(Asistencia.idAlumno)
-        .where(
-            and_(
-                Asistencia.idCurso == idCurso,
-                Asistencia.fecha == fecha,
-                Asistencia.estado == "Ausente",
-            )
-        )
+        .where(and_(Asistencia.idCurso == idCurso, Asistencia.fecha == fecha, Asistencia.estado == "Ausente"))
     )
     candidatos = [int(x) for x in db.exec(stmt_ausentes_hoy).all()]
     if not candidatos:
@@ -233,8 +219,7 @@ def check_y_crear_alertas_consecutivas_para_curso_fecha(
                 )
             )
         )
-        cnt_row = db.exec(stmt_check).one()
-        cnt = int(cnt_row or 0)
+        cnt = int(db.exec(stmt_check).one() or 0)
 
         if cnt == min_consecutivas:
             alerta = Alerta(
@@ -247,65 +232,46 @@ def check_y_crear_alertas_consecutivas_para_curso_fecha(
                 fechaInicioRacha=ult_fechas_sorted[0],
                 fechaFinRacha=ult_fechas_sorted[-1],
                 archivada=False,
-                
             )
             now = datetime.utcnow()
             alerta.created_at = now
             alerta.ultimaAccionAt = now
-
             db.add(alerta)
 
     db.commit()
+
 
 def check_y_crear_alertas_tardanzas_para_curso_fecha(
     db: SessionDep,
     idCurso: int,
     fecha: date,
-    umbral: int = 3,  # "más de 3" => dispara en 4
+    umbral: int = 3,
 ):
-    """
-    Crea alerta automática por LLEGADAS_TARDE cuando un alumno acumula
-    más de 'umbral' tardanzas dentro del ciclo lectivo del curso (o año de la fecha).
-    Se dispara mirando los alumnos que HOY tuvieron estado == "Tarde".
-    """
     curso = db.get(Curso, idCurso)
     if not curso:
         return
 
     cue = curso.CUE
-
-    # Tomamos el año/ciclo lectivo del curso si existe (tu modelo Curso lo tiene),
-    # sino usamos el año de la fecha.
     anio = getattr(curso, "cicloLectivo", None) or fecha.year
     desde = date(int(anio), 1, 1)
     hasta = date(int(anio), 12, 31)
 
-    # Alumnos que llegaron tarde en esta fecha (candidatos)
     stmt_tarde_hoy = (
         select(Asistencia.idAlumno)
-        .where(
-            and_(
-                Asistencia.idCurso == idCurso,
-                Asistencia.fecha == fecha,
-                Asistencia.estado == "Tarde",
-            )
-        )
+        .where(and_(Asistencia.idCurso == idCurso, Asistencia.fecha == fecha, Asistencia.estado == "Tarde"))
     )
     candidatos = [int(x) for x in db.exec(stmt_tarde_hoy).all()]
     if not candidatos:
         return
 
     for idAlumno in candidatos:
-        # Debe estar inscripto/activo ese día
         insc = _inscripcion_activa_para_fecha(db, idCurso, idAlumno, fecha)
         if not insc:
             continue
 
-        # Evitar duplicado activo por este motivo
         if _ya_existe_alerta_activa_motivo(db, cue, idCurso, idAlumno, MotivoAlerta.LLEGADAS_TARDE):
             continue
 
-        # Contar tardanzas en el ciclo/año
         stmt_cnt = (
             select(func.count())
             .select_from(Asistencia)
@@ -319,14 +285,11 @@ def check_y_crear_alertas_tardanzas_para_curso_fecha(
                 )
             )
         )
-        cnt_row = db.exec(stmt_cnt).one()
-        cnt = int(cnt_row or 0)
+        cnt = int(db.exec(stmt_cnt).one() or 0)
 
-        # "más de 3" => cnt >= 4
         if cnt <= umbral:
             continue
 
-        # Fecha primera y última tardanza del período
         stmt_minmax = (
             select(
                 func.min(Asistencia.fecha).label("minf"),
@@ -352,21 +315,21 @@ def check_y_crear_alertas_tardanzas_para_curso_fecha(
             idAlumno=idAlumno,
             motivo=MotivoAlerta.LLEGADAS_TARDE,
             estado=EstadoAlerta.PENDIENTE,
-            consecutivas=cnt,               # reutilizamos el campo como "cantidad"
-            fechaInicioRacha=fecha_ini,     # primera tardanza del período
-            fechaFinRacha=fecha_fin,        # última tardanza del período
+            consecutivas=cnt,
+            fechaInicioRacha=fecha_ini,
+            fechaFinRacha=fecha_fin,
             archivada=False,
         )
         now = datetime.utcnow()
         alerta.created_at = now
         alerta.ultimaAccionAt = now
-
         db.add(alerta)
 
     db.commit()
 
+
 # -----------------------------
-# ✅ Listado para la grilla (Asistente)
+# Listado para la grilla (Asistente)
 # -----------------------------
 def list_alertas(
     db: SessionDep,
@@ -416,15 +379,26 @@ def list_alertas(
     if hasta:
         stmt = stmt.where(Alerta.fechaFinRacha <= hasta)
 
+    # Búsqueda por q: nombre/apellido con ilike, DNI con hash exacto
     if q and q.strip():
-        qq = q.strip().lower()
-        stmt = stmt.where(
-            or_(
-                func.lower(Alumno.nombre).like(f"%{qq}%"),
-                func.lower(Alumno.apellido).like(f"%{qq}%"),
-                func.lower(Alumno.dni).like(f"%{qq}%"),
+        qq = q.strip()
+        like = f"%{qq.lower()}%"
+        if qq.isdigit():
+            dni_hash_q = hash_for_search(qq)
+            stmt = stmt.where(
+                or_(
+                    func.lower(Alumno.nombre).like(like),
+                    func.lower(Alumno.apellido).like(like),
+                    Alumno.dni_hash == dni_hash_q,        # ← FIX
+                )
             )
-        )
+        else:
+            stmt = stmt.where(
+                or_(
+                    func.lower(Alumno.nombre).like(like),
+                    func.lower(Alumno.apellido).like(like),
+                )
+            )
 
     rows = db.exec(stmt).all()
 
@@ -437,7 +411,7 @@ def list_alertas(
                 cue=alerta.cue,
                 idAlumno=int(alerta.idAlumno),
                 alumnoNombre=f"{ape}, {nom}",
-                alumnoDni=dni,
+                alumnoDni=decrypt(dni) if dni else dni,    # ← FIX
                 idCurso=int(alerta.idCurso),
                 created_at=alerta.created_at,
                 curso=curso_str,
@@ -465,31 +439,24 @@ def patch_alerta(
         raise HTTPException(status_code=404, detail="Alerta no encontrada")
 
     data = patch.model_dump(exclude_unset=True)
-
-    # ✅ actor desde JWT (prioridad) o desde patch (compat)
     actor_id = actor_user_id if actor_user_id is not None else data.pop("actor_id", None)
 
     prev_estado = alerta.estado
     prev_archivada = bool(alerta.archivada)
 
-    # aplicar cambios
     if "estado" in data and data["estado"] == EstadoAlerta.RESUELTO and alerta.estado != EstadoAlerta.RESUELTO:
         alerta.resueltaAt = datetime.utcnow()
 
     for k, v in data.items():
         setattr(alerta, k, v)
 
-    # persistimos cambios base
     db.add(alerta)
     db.commit()
     db.refresh(alerta)
 
-    # registrar eventos si hubo cambios (auditoría)
     actor_nombre, actor_rol = _actor_snapshot(db, actor_id, alerta.cue)
-
     hubo_cambio = False
 
-    # cambio de estado
     if "estado" in data and prev_estado != alerta.estado:
         hubo_cambio = True
         ev = Intervencion(
@@ -505,7 +472,6 @@ def patch_alerta(
         )
         db.add(ev)
 
-    # archivar / desarchivar
     if "archivada" in data and prev_archivada != bool(alerta.archivada):
         hubo_cambio = True
         nuevo = bool(alerta.archivada)
@@ -522,7 +488,6 @@ def patch_alerta(
         )
         db.add(ev)
 
-    # si hubo cambios "reales", actualizamos ultimaAccionAt y comiteamos
     if hubo_cambio:
         alerta.ultimaAccionAt = datetime.utcnow()
         db.add(alerta)
@@ -530,6 +495,7 @@ def patch_alerta(
         db.refresh(alerta)
 
     return alerta
+
 
 def add_intervencion(
     db: SessionDep,
@@ -541,10 +507,7 @@ def add_intervencion(
     if not alerta:
         raise HTTPException(status_code=404, detail="Alerta no encontrada")
 
-    # ✅ actor desde JWT (prioridad) o desde payload (compat)
     actor_id = actor_user_id if actor_user_id is not None else getattr(payload, "created_by", None)
-
-    # snapshot del actor (nombre + rol) según el CUE de la alerta
     actor_nombre, actor_rol = _actor_snapshot(db, actor_id, alerta.cue)
 
     inter = Intervencion(
@@ -560,7 +523,6 @@ def add_intervencion(
     )
     db.add(inter)
 
-    # actualizar metadata de la alerta
     alerta.ultimaAccionAt = datetime.utcnow()
     if alerta.estado == EstadoAlerta.PENDIENTE:
         alerta.estado = EstadoAlerta.EN_PROCESO
@@ -587,36 +549,29 @@ def add_intervencion(
         created_at=inter.created_at,
     )
 
-def create_alerta(db: SessionDep,payload: AlertaCreate,actor_user_id: int | None = None,) -> Alerta:
-    """
-    Crea una alerta manual desde el front (Asistente).
-    """
-    # 1) valida curso
+
+def create_alerta(
+    db: SessionDep,
+    payload: AlertaCreate,
+    actor_user_id: int | None = None,
+) -> Alerta:
     curso = db.get(Curso, payload.idCurso)
     if not curso:
         raise HTTPException(status_code=404, detail="Curso no encontrado")
 
-    # 2) valida CUE: el CUE viene del payload y debe coincidir con el curso
     if str(curso.CUE) != str(payload.cue):
         raise HTTPException(status_code=400, detail="El curso no pertenece al CUE indicado")
 
-    # 3) valida alumno
     alumno = db.get(Alumno, payload.idAlumno)
     if not alumno:
         raise HTTPException(status_code=404, detail="Alumno no encontrado")
 
     hoy = date.today()
-    insc = _inscripcion_activa_para_fecha(db, payload.idCurso, payload.idAlumno, hoy)
+    _inscripcion_activa_para_fecha(db, payload.idCurso, payload.idAlumno, hoy)
 
-    # ✅ Para alertas manuales NO bloqueamos.
-    if not insc:
-        pass
-
-    # 5) evita duplicado activo por motivo
     if _ya_existe_alerta_activa_motivo(db, payload.cue, payload.idCurso, payload.idAlumno, payload.motivo):
         raise HTTPException(status_code=409, detail="Ya existe una alerta activa para este alumno/curso/motivo")
 
-    # 6) crea alerta
     alerta = Alerta(
         cue=payload.cue,
         idCurso=payload.idCurso,
@@ -630,15 +585,13 @@ def create_alerta(db: SessionDep,payload: AlertaCreate,actor_user_id: int | None
         fechaFinRacha=payload.fechaFinRacha or hoy,
     )
 
-    # Si tu modelo Alerta tiene campo "detalle", lo seteamos sin romper si no existe
     if hasattr(alerta, "detalle"):
         setattr(alerta, "detalle", payload.detalle)
 
-    # created_by si existe en modelo
     actor_id = actor_user_id if actor_user_id is not None else getattr(payload, "created_by", None)
     if hasattr(alerta, "created_by"):
         setattr(alerta, "created_by", actor_id)
-        
+
     now = datetime.utcnow()
     alerta.created_at = now
     alerta.ultimaAccionAt = now
@@ -647,8 +600,10 @@ def create_alerta(db: SessionDep,payload: AlertaCreate,actor_user_id: int | None
     db.commit()
     db.refresh(alerta)
     return alerta
+
+
 # -----------------------------
-# 📊 Estadísticas Director
+# Estadísticas Director
 # -----------------------------
 def stats_alertas_activas_por_escuela(
     db: SessionDep,
@@ -657,15 +612,6 @@ def stats_alertas_activas_por_escuela(
     hasta: Optional[date] = None,
     curso_ids: Optional[list[int]] = None,
 ):
-    """
-    Devuelve alertas activas (no archivadas y no resueltas)
-    para usar como 'Alumnos en riesgo' en el panel del Director.
-
-    Filtros:
-    - desde/hasta: filtra por fechaInicioRacha (inicio de racha dentro del rango)
-    - curso_ids: filtra por cursos específicos
-    """
-
     stmt = (
         select(
             Alerta,
@@ -684,41 +630,32 @@ def stats_alertas_activas_por_escuela(
                 Alerta.idCurso == Curso.idCurso,
                 Alerta.archivada.is_(False),
                 Alerta.estado.in_(
-                    [
-                        EstadoAlerta.PENDIENTE,
-                        EstadoAlerta.EN_PROCESO,
-                        EstadoAlerta.CRITICO,
-                    ]
+                    [EstadoAlerta.PENDIENTE, EstadoAlerta.EN_PROCESO, EstadoAlerta.CRITICO]
                 ),
             )
         )
     )
 
-    # ✅ Filtrar por período (racha inició dentro del rango)
     if desde:
         stmt = stmt.where(Alerta.fechaInicioRacha >= desde)
     if hasta:
         stmt = stmt.where(Alerta.fechaInicioRacha <= hasta)
-
-    # ✅ Filtrar por cursos
     if curso_ids:
         stmt = stmt.where(Alerta.idCurso.in_(curso_ids))
 
     stmt = stmt.order_by(desc(Alerta.estado), desc(Alerta.created_at))
-
     rows = db.exec(stmt).all()
 
     out: list[AlertaListItem] = []
     for alerta, nom, ape, dni, cursoNom, div, ciclo in rows:
         curso_str = f"{cursoNom} {div} ({ciclo})".strip()
-
         out.append(
             AlertaListItem(
                 idAlerta=int(alerta.idAlerta),
                 cue=alerta.cue,
                 idAlumno=int(alerta.idAlumno),
                 alumnoNombre=f"{ape}, {nom}",
-                alumnoDni=dni,
+                alumnoDni=decrypt(dni) if dni else dni,    # ← FIX
                 idCurso=int(alerta.idCurso),
                 created_at=alerta.created_at,
                 curso=curso_str,

@@ -10,8 +10,8 @@ from sqlalchemy import func, and_, desc, or_
 
 from app.dependencies import SessionDep
 from app.models.curso_docente import CursoDocente
-from app.models.escuela import Escuela  
-from app.models.rol import Rol 
+from app.models.escuela import Escuela
+from app.models.rol import Rol
 from app.schemas.rol import RolDescripcion, RolEstado
 from app.models.alumno import Alumno
 from app.models.curso import Curso
@@ -28,24 +28,75 @@ from app.services.curso_service import get_one_curso
 from app.schemas.alumnos_historial import AlumnoCicloPage, AlumnoCicloRow
 from app.schemas.inscriptos import EstadoInscripcion
 from app.models.preinscripcion import Preinscripcion
+from app.core.encryption import decrypt, hash_for_search
 
-# HELPERS
+
+# ==============================================================
+# HELPERS INTERNOS
+# ==============================================================
 
 def _clean_str(v: str | None) -> str | None:
     if v is None:
         return None
     return str(v).strip()
 
+
 def _require_not_empty(value: str | None, field_name: str):
-    """
-    Si el campo viene (no es None), no puede ser vacío.
-    """
     if value is not None and not str(value).strip():
         raise HTTPException(status_code=400, detail=f"El campo '{field_name}' no puede estar vacío")
 
-def _exists_otro_alumno_con_dni(db: SessionDep, dni: str, exclude_id: int) -> bool:
-    stmt = select(Alumno).where(Alumno.dni == dni, Alumno.idAlumno != exclude_id)
+
+def _decrypt_alumno(alumno: Alumno) -> dict:
+    """Desencripta los campos sensibles de un alumno y devuelve un dict listo para respuesta."""
+    return {
+        "idAlumno": alumno.idAlumno,
+        "nombre": alumno.nombre,
+        "apellido": alumno.apellido,
+        "dni": decrypt(alumno.dni) if alumno.dni else alumno.dni,
+        "fecha_nacimiento": decrypt(alumno.fecha_nacimiento) if alumno.fecha_nacimiento else None,
+        "fecha_ingreso": alumno.fecha_ingreso,
+        "direccion": decrypt(alumno.direccion) if alumno.direccion else alumno.direccion,
+        "estado": alumno.estado,
+    }
+
+
+def _decrypt_responsable_mini(resp, parentesco) -> ResponsableMiniPublic:
+    """Construye un ResponsableMiniPublic con los campos desencriptados."""
+    return ResponsableMiniPublic(
+        idResponsable=resp.idResponsable,
+        nombre=resp.nombre,
+        apellido=resp.apellido,
+        parentesco=parentesco,
+        nro_celular=getattr(resp, "nro_celular", None),
+        email=getattr(resp, "email", None),
+        direccion=decrypt(resp.direccion) if getattr(resp, "direccion", None) else None,
+    )
+
+
+def _decrypt_responsable_con_parentesco(resp, parentesco) -> ResponsableConParentescoPublic:
+    """Construye un ResponsableConParentescoPublic con los campos desencriptados."""
+    return ResponsableConParentescoPublic(
+        idResponsable=resp.idResponsable,
+        nombre=resp.nombre,
+        apellido=resp.apellido,
+        dni=decrypt(resp.dni) if resp.dni else resp.dni,
+        fecha_nacimiento=decrypt(resp.fecha_nacimiento) if getattr(resp, "fecha_nacimiento", None) else None,
+        email=resp.email,
+        nro_celular=resp.nro_celular,
+        direccion=decrypt(resp.direccion) if getattr(resp, "direccion", None) else None,
+        parentesco=parentesco,
+    )
+
+
+def _exists_otro_alumno_con_dni(db: SessionDep, dni_plain: str, exclude_id: int) -> bool:
+    """Verifica duplicado de DNI usando el hash determinístico."""
+    dni_hash = hash_for_search(dni_plain.strip())
+    stmt = select(Alumno).where(
+        Alumno.dni_hash == dni_hash,
+        Alumno.idAlumno != exclude_id
+    )
     return db.exec(stmt).first() is not None
+
 
 def _is_admin_global(session: SessionDep, user_id: int) -> bool:
     stmt = (
@@ -68,10 +119,6 @@ def _has_active_role_in_cue(session: SessionDep, user_id: int, cue: str) -> Rol 
 
 
 def _require_docente_asignado_a_curso(session: SessionDep, user_id: int, idCurso: int) -> None:
-    """
-    Docente solo puede operar si tiene asignación Activa en curso_docente.
-    También respeta ventana fechaDesde/fechaHasta si están.
-    """
     stmt = (
         select(CursoDocente)
         .where(CursoDocente.idUsuario == user_id)
@@ -89,23 +136,22 @@ def _require_docente_asignado_a_curso(session: SessionDep, user_id: int, idCurso
         raise HTTPException(status_code=403, detail="Asignación docente vencida")
 
 
-
+# ==============================================================
 # GET ALL
+# ==============================================================
 
 def get_all_alumnos(db: SessionDep, offset: int, limit: Annotated[int, Query(le=100)]):
     alumnos = db.exec(select(Alumno).offset(offset).limit(limit)).all()
     return alumnos
 
 
+# ==============================================================
 # GET BY CURSO (INSCRIPTOS)
+# ==============================================================
 
 def get_alumnos_detalle_by_curso(idCurso: int, db: SessionDep):
     stmt = (
-        select(
-            Alumno,
-            Responsable,
-            Parentesco.parentesco
-        )
+        select(Alumno, Responsable, Parentesco.parentesco)
         .join(Inscriptos, Inscriptos.idAlumno == Alumno.idAlumno)
         .outerjoin(Parentesco, Parentesco.idAlumno == Alumno.idAlumno)
         .outerjoin(Responsable, Responsable.idResponsable == Parentesco.idResponsable)
@@ -114,27 +160,15 @@ def get_alumnos_detalle_by_curso(idCurso: int, db: SessionDep):
     )
 
     rows = db.exec(stmt).all()
-
     alumnos_map = {}
 
     for alumno, responsable, parentesco in rows:
         if alumno.idAlumno not in alumnos_map:
-            alumnos_map[alumno.idAlumno] = {
-                "alumno": alumno,
-                "responsable": None
-            }
+            alumnos_map[alumno.idAlumno] = {"alumno": alumno, "responsable": None}
 
         if responsable and not alumnos_map[alumno.idAlumno]["responsable"]:
-            alumnos_map[alumno.idAlumno]["responsable"] = ResponsableConParentescoPublic(
-                idResponsable=responsable.idResponsable,
-                nombre=responsable.nombre,
-                apellido=responsable.apellido,
-                dni=responsable.dni,
-                fecha_nacimiento=responsable.fecha_nacimiento,
-                email=responsable.email,
-                nro_celular=responsable.nro_celular,
-                direccion=responsable.direccion,
-                parentesco=parentesco,
+            alumnos_map[alumno.idAlumno]["responsable"] = _decrypt_responsable_con_parentesco(
+                responsable, parentesco
             )
 
     return [
@@ -142,7 +176,7 @@ def get_alumnos_detalle_by_curso(idCurso: int, db: SessionDep):
             idAlumno=a.idAlumno,
             nombre=a.nombre,
             apellido=a.apellido,
-            dni=a.dni,
+            dni=decrypt(a.dni) if a.dni else a.dni,
             estado=a.estado,
             responsable=data["responsable"],
         )
@@ -150,9 +184,14 @@ def get_alumnos_detalle_by_curso(idCurso: int, db: SessionDep):
         for a in [data["alumno"]]
     ]
 
+
 def get_ciclo_actual() -> str:
     return str(datetime.now().year)
 
+
+# ==============================================================
+# GET DETALLE POR ESCUELA
+# ==============================================================
 
 def get_alumnos_detalle_por_escuela(
     db,
@@ -163,7 +202,6 @@ def get_alumnos_detalle_por_escuela(
     if not ciclo_lectivo:
         ciclo_lectivo = get_ciclo_actual()
 
-    # Responsable "principal"
     sub_resp = (
         select(
             Parentesco.idAlumno.label("idAlumno"),
@@ -173,16 +211,9 @@ def get_alumnos_detalle_por_escuela(
         .subquery()
     )
 
-    # =========================
-    # A) Alumnos CON curso (inscriptos activos en ese ciclo)
-    # =========================
+    # A) Alumnos CON curso
     stmt = (
-        select(
-            Alumno,
-            Curso,
-            Responsable,
-            Parentesco.parentesco,
-        )
+        select(Alumno, Curso, Responsable, Parentesco.parentesco)
         .join(Inscriptos, Inscriptos.idAlumno == Alumno.idAlumno)
         .join(Curso, Curso.idCurso == Inscriptos.idCurso)
         .outerjoin(sub_resp, sub_resp.c.idAlumno == Alumno.idAlumno)
@@ -198,29 +229,19 @@ def get_alumnos_detalle_por_escuela(
     )
 
     rows = db.exec(stmt).all()
-
     out: list[AlumnoEscuelaDetallePublic] = []
     ids_ya: set[int] = set()
 
     for alumno, curso, resp, parentesco in rows:
         ids_ya.add(int(alumno.idAlumno))
-
-        responsable_public = None
-        if resp:
-            responsable_public = ResponsableMiniPublic(
-                idResponsable=resp.idResponsable,
-                nombre=resp.nombre,
-                apellido=resp.apellido,
-                parentesco=parentesco,
-                nro_celular=getattr(resp, "nro_celular", None),
-            )
+        responsable_public = _decrypt_responsable_mini(resp, parentesco) if resp else None
 
         out.append(
             AlumnoEscuelaDetallePublic(
                 idAlumno=alumno.idAlumno,
                 nombre=alumno.nombre,
                 apellido=alumno.apellido,
-                dni=alumno.dni,
+                dni=decrypt(alumno.dni) if alumno.dni else alumno.dni,
                 estado=getattr(alumno, "estado", "Activo") or "Activo",
                 idCurso=curso.idCurso,
                 nombreCurso=f"{curso.nombre} {curso.division}".strip(),
@@ -228,15 +249,9 @@ def get_alumnos_detalle_por_escuela(
             )
         )
 
-    # =========================
-    # B) Alumnos SIN curso (preinscripción pendiente en ese ciclo)
-    # =========================
+    # B) Alumnos SIN curso (preinscripción pendiente)
     stmt_pre = (
-        select(
-            Alumno,
-            Responsable,
-            Parentesco.parentesco,
-        )
+        select(Alumno, Responsable, Parentesco.parentesco)
         .join(Preinscripcion, Preinscripcion.idAlumno == Alumno.idAlumno)
         .outerjoin(sub_resp, sub_resp.c.idAlumno == Alumno.idAlumno)
         .outerjoin(Responsable, Responsable.idResponsable == sub_resp.c.idResponsable)
@@ -250,28 +265,17 @@ def get_alumnos_detalle_por_escuela(
         .where(Preinscripcion.estado == "Pendiente")
     )
 
-    rows_pre = db.exec(stmt_pre).all()
-
-    for alumno, resp, parentesco in rows_pre:
+    for alumno, resp, parentesco in db.exec(stmt_pre).all():
         if int(alumno.idAlumno) in ids_ya:
             continue
-
-        responsable_public = None
-        if resp:
-            responsable_public = ResponsableMiniPublic(
-                idResponsable=resp.idResponsable,
-                nombre=resp.nombre,
-                apellido=resp.apellido,
-                parentesco=parentesco,
-                nro_celular=getattr(resp, "nro_celular", None),
-            )
+        responsable_public = _decrypt_responsable_mini(resp, parentesco) if resp else None
 
         out.append(
             AlumnoEscuelaDetallePublic(
                 idAlumno=alumno.idAlumno,
                 nombre=alumno.nombre,
                 apellido=alumno.apellido,
-                dni=alumno.dni,
+                dni=decrypt(alumno.dni) if alumno.dni else alumno.dni,
                 estado=getattr(alumno, "estado", "Activo") or "Activo",
                 idCurso=None,
                 nombreCurso="Sin asignar",
@@ -282,17 +286,12 @@ def get_alumnos_detalle_por_escuela(
     out.sort(key=lambda x: ((x.apellido or "").lower(), (x.nombre or "").lower()))
     return out
 
-def get_alumno_detalle_por_id(
-    db: SessionDep,
-    idAlumno: int,
-) -> AlumnoEscuelaDetallePublic:
-    """
-    Devuelve el detalle completo de 1 alumno (para el dialog de alertas):
-    - nombre, apellido, dni, estado, direccion
-    - curso actual (uno)
-    - responsable mini (uno) con email y direccion
-    """
 
+# ==============================================================
+# GET DETALLE POR ID
+# ==============================================================
+
+def get_alumno_detalle_por_id(db: SessionDep, idAlumno: int) -> AlumnoEscuelaDetallePublic:
     sub_resp = (
         select(
             Parentesco.idAlumno.label("idAlumno"),
@@ -304,12 +303,7 @@ def get_alumno_detalle_por_id(
     )
 
     stmt = (
-        select(
-            Alumno,
-            Curso,
-            Responsable,
-            Parentesco.parentesco,
-        )
+        select(Alumno, Curso, Responsable, Parentesco.parentesco)
         .join(Inscriptos, Inscriptos.idAlumno == Alumno.idAlumno)
         .join(Curso, Curso.idCurso == Inscriptos.idCurso)
         .outerjoin(sub_resp, sub_resp.c.idAlumno == Alumno.idAlumno)
@@ -321,8 +315,8 @@ def get_alumno_detalle_por_id(
                 Parentesco.idResponsable == sub_resp.c.idResponsable,
             ),
         )
-        .where(Inscriptos.activo == True) 
-        .order_by(desc(Inscriptos.fechaAlta), desc(Inscriptos.idInscripcion)) 
+        .where(Inscriptos.activo == True)
+        .order_by(desc(Inscriptos.fechaAlta), desc(Inscriptos.idInscripcion))
         .limit(1)
     )
 
@@ -340,30 +334,28 @@ def get_alumno_detalle_por_id(
             apellido=resp.apellido,
             parentesco=parentesco,
             nro_celular=getattr(resp, "nro_celular", None),
-
             email=getattr(resp, "email", None),
-            direccion=getattr(resp, "direccion", None),
+            direccion=decrypt(resp.direccion) if getattr(resp, "direccion", None) else None,
         )
 
     return AlumnoEscuelaDetallePublic(
         idAlumno=alumno.idAlumno,
         nombre=alumno.nombre,
         apellido=alumno.apellido,
-        dni=alumno.dni,
+        dni=decrypt(alumno.dni) if alumno.dni else alumno.dni,
         estado=getattr(alumno, "estado", "Activo") or "Activo",
-        direccion=getattr(alumno, "direccion", None),
-
+        direccion=decrypt(alumno.direccion) if getattr(alumno, "direccion", None) else None,
         idCurso=curso.idCurso,
         nombreCurso=f"{curso.nombre} {curso.division}".strip(),
         responsable=responsable_public,
     )
 
 
+# ==============================================================
+# GET BY CURSO
+# ==============================================================
+
 def get_alumnos_by_curso(idCurso: int, db: SessionDep):
-    """
-    Devuelve los alumnos INSCRIPTOS ACTIVOS a un curso (matrícula actual),
-    sin depender de que exista asistencia.
-    """
     curso = get_one_curso(idCurso=idCurso, db=db)
     if curso is None:
         raise Exception("El curso ingresado no existe")
@@ -371,24 +363,29 @@ def get_alumnos_by_curso(idCurso: int, db: SessionDep):
     stmt = (
         select(Alumno)
         .join(Inscriptos, Inscriptos.idAlumno == Alumno.idAlumno)
-        .where(
-            Inscriptos.idCurso == idCurso,
-            Inscriptos.activo == True,  
-        )
+        .where(Inscriptos.idCurso == idCurso, Inscriptos.activo == True)
     )
     return db.exec(stmt).all()
 
 
-# HELPERS
+# ==============================================================
+# HELPERS DE BÚSQUEDA
+# ==============================================================
 
 def get_alumno_by_dni(db: SessionDep, dni: str):
-    stmt = select(Alumno).where(Alumno.dni == dni)
+    """Busca un alumno por DNI usando el hash determinístico."""
+    dni_hash = hash_for_search(dni.strip())
+    stmt = select(Alumno).where(Alumno.dni_hash == dni_hash)
     return db.exec(stmt).first()
+
 
 def get_one_alumno(idAlumno: int, db: SessionDep):
     return db.get(Alumno, idAlumno)
 
+
+# ==============================================================
 # CREATE
+# ==============================================================
 
 def add_alumno(db: SessionDep, alumno_in: AlumnoCreate, current_user):
     user_id = int(current_user.idUsuario)
@@ -434,12 +431,14 @@ def add_alumno(db: SessionDep, alumno_in: AlumnoCreate, current_user):
             if rol.descripcion != RolDescripcion.Director:
                 raise HTTPException(status_code=403, detail="Solo Director puede crear preinscripciones")
 
-    dni = _clean_str(alumno_in.dni) or ""
-
-    if not dni:
+    # dni ya viene encriptado desde AlumnoCreate (via field_validator)
+    # pero para buscar duplicados necesitamos el valor plain → lo desencriptamos
+    dni_encriptado = alumno_in.dni or ""
+    if not dni_encriptado:
         raise HTTPException(status_code=400, detail="El DNI del alumno es obligatorio")
 
-    existente = get_alumno_by_dni(db, dni)
+    dni_plain = decrypt(dni_encriptado)
+    existente = get_alumno_by_dni(db, dni_plain)
 
     if existente:
         stmt_check = (
@@ -455,8 +454,8 @@ def add_alumno(db: SessionDep, alumno_in: AlumnoCreate, current_user):
         db_alumno = existente
     else:
         data = alumno_in.model_dump(exclude={"idCurso", "CUE", "cicloLectivo"})
-        data["dni"] = dni
 
+        # Validar campos obligatorios (sobre valores plain para el mensaje de error)
         _require_not_empty(_clean_str(data.get("nombre")), "nombre")
         _require_not_empty(_clean_str(data.get("apellido")), "apellido")
         _require_not_empty(_clean_str(data.get("direccion")), "direccion")
@@ -466,7 +465,7 @@ def add_alumno(db: SessionDep, alumno_in: AlumnoCreate, current_user):
         db.commit()
         db.refresh(db_alumno)
 
-    # 1) Si viene curso => matrícula real (Inscriptos)
+    # 1) Si viene curso → matrícula real
     if getattr(alumno_in, "idCurso", None) and alumno_in.idCurso and alumno_in.idCurso > 0:
         curso = get_one_curso(idCurso=alumno_in.idCurso, db=db)
         if curso is None:
@@ -485,13 +484,12 @@ def add_alumno(db: SessionDep, alumno_in: AlumnoCreate, current_user):
             db.add(insc)
             db.commit()
 
-    # 2) Si NO viene curso => preinscripción (Pendiente)
+    # 2) Si NO viene curso → preinscripción
     else:
         cue = _clean_str(getattr(alumno_in, "CUE", None))
         ciclo = _clean_str(getattr(alumno_in, "cicloLectivo", None))
 
         if cue and ciclo:
-            # ✅ Solo crear si no existe ya una preinscripción pendiente
             pre_existente = db.exec(
                 select(Preinscripcion).where(
                     Preinscripcion.idAlumno == db_alumno.idAlumno,
@@ -514,52 +512,35 @@ def add_alumno(db: SessionDep, alumno_in: AlumnoCreate, current_user):
     db.refresh(db_alumno)
     return db_alumno
 
-# UPDATE (con validación DNI único)
+
+# ==============================================================
+# UPDATE
+# ==============================================================
 
 def update_alumno(alumno_existente: Alumno, alumno_nuevo: AlumnoUpdate, db: SessionDep):
     data = alumno_nuevo.model_dump(exclude_unset=True)
 
-    # ==========================
-    # VALIDAR DNI DUPLICADO
-    # ==========================
+    # Validar DNI duplicado usando hash
     if "dni" in data:
-        dni_nuevo = data["dni"].strip()
-        if not dni_nuevo:
+        dni_encriptado = data["dni"]
+        if not dni_encriptado:
             raise HTTPException(status_code=400, detail="El DNI es obligatorio")
 
-        stmt = select(Alumno).where(
-            Alumno.dni == dni_nuevo,
-            Alumno.idAlumno != alumno_existente.idAlumno
-        )
-        existente = db.exec(stmt).first()
-        if existente:
-            raise HTTPException(
-                status_code=400,
-                detail="Ya existe otro alumno con ese DNI"
-            )
+        dni_plain = decrypt(dni_encriptado)
 
-        data["dni"] = dni_nuevo
+        if _exists_otro_alumno_con_dni(db, dni_plain, alumno_existente.idAlumno):
+            raise HTTPException(status_code=400, detail="Ya existe otro alumno con ese DNI")
 
-    # ==========================
-    # VALIDAR CAMPOS OBLIGATORIOS
-    # ==========================
-    campos_obligatorios = [
-        "nombre",
-        "apellido",
-        "fecha_nacimiento",
-        "fecha_ingreso",
-        "direccion",
-        "estado",
-    ]
+        # Actualizar también el hash
+        data["dni_hash"] = hash_for_search(dni_plain)
 
+    # Validar campos obligatorios
+    campos_obligatorios = ["nombre", "apellido", "fecha_nacimiento", "fecha_ingreso", "direccion", "estado"]
     for campo in campos_obligatorios:
         if campo in data:
             valor = data[campo]
             if valor is None or (isinstance(valor, str) and not valor.strip()):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"El campo '{campo}' es obligatorio"
-                )
+                raise HTTPException(status_code=400, detail=f"El campo '{campo}' es obligatorio")
 
     alumno_existente.sqlmodel_update(data)
     db.add(alumno_existente)
@@ -567,11 +548,19 @@ def update_alumno(alumno_existente: Alumno, alumno_nuevo: AlumnoUpdate, db: Sess
     db.refresh(alumno_existente)
     return alumno_existente
 
+
+# ==============================================================
 # DELETE
+# ==============================================================
 
 def delete_alumno(db: SessionDep, alumno: Alumno):
     db.delete(alumno)
     db.commit()
+
+
+# ==============================================================
+# HISTORIAL POR CICLO
+# ==============================================================
 
 def get_alumnos_historial_por_ciclo(
     db: SessionDep,
@@ -582,15 +571,7 @@ def get_alumnos_historial_por_ciclo(
     offset: int = 0,
     limit: int = 20,
 ) -> AlumnoCicloPage:
-    """
-    Devuelve matrícula por ciclo lectivo (una fila por alumno),
-    tomando la ÚLTIMA inscripción del alumno en ese ciclo (evita duplicados por CambioCurso).
 
-    ✅ Además agrega alumnos SIN CURSO (Preinscripcion Pendiente) para ese CUE + ciclo,
-    devolviendo idCurso=0 y nombreCurso="Sin asignar".
-    """
-
-    # 1) subquery: última inscripción del alumno en ese ciclo (max idInscripcion)
     sub_last_insc = (
         select(
             Inscriptos.idAlumno.label("idAlumno"),
@@ -603,7 +584,6 @@ def get_alumnos_historial_por_ciclo(
         .subquery()
     )
 
-    # 1b) subquery: inscripción ACTIVA actual del alumno en esa escuela (max idInscripcion con activo=True)
     sub_current_active = (
         select(
             Inscriptos.idAlumno.label("idAlumno"),
@@ -616,7 +596,6 @@ def get_alumnos_historial_por_ciclo(
         .subquery()
     )
 
-    # 2) subquery: responsable "principal"
     sub_resp = (
         select(
             Parentesco.idAlumno.label("idAlumno"),
@@ -629,24 +608,14 @@ def get_alumnos_historial_por_ciclo(
     CursoActual = aliased(Curso)
     InscActual = aliased(Inscriptos)
 
-    # 3) query base: alumnos con inscripción en el ciclo consultado
     stmt = (
-        select(
-            Alumno,
-            Curso,
-            Inscriptos,
-            Responsable,
-            Parentesco.parentesco,
-            CursoActual,
-        )
+        select(Alumno, Curso, Inscriptos, Responsable, Parentesco.parentesco, CursoActual)
         .join(sub_last_insc, sub_last_insc.c.idAlumno == Alumno.idAlumno)
         .join(Inscriptos, Inscriptos.idInscripcion == sub_last_insc.c.lastId)
         .join(Curso, Curso.idCurso == Inscriptos.idCurso)
-
         .outerjoin(sub_current_active, sub_current_active.c.idAlumno == Alumno.idAlumno)
         .outerjoin(InscActual, InscActual.idInscripcion == sub_current_active.c.currentId)
         .outerjoin(CursoActual, CursoActual.idCurso == InscActual.idCurso)
-
         .outerjoin(sub_resp, sub_resp.c.idAlumno == Alumno.idAlumno)
         .outerjoin(Responsable, Responsable.idResponsable == sub_resp.c.idResponsable)
         .outerjoin(
@@ -661,18 +630,28 @@ def get_alumnos_historial_por_ciclo(
     if solo_activos:
         stmt = stmt.where(Inscriptos.activo == True)  # noqa: E712
 
+    # Búsqueda por q: nombre/apellido con ilike, DNI con hash exacto
     if q:
-        term = f"%{q.strip()}%"
-        stmt = stmt.where(
-            or_(
-                Alumno.nombre.ilike(term),
-                Alumno.apellido.ilike(term),
-                Alumno.dni.ilike(term),
+        q_clean = q.strip()
+        term = f"%{q_clean}%"
+        if q_clean.isdigit():
+            dni_hash_q = hash_for_search(q_clean)
+            stmt = stmt.where(
+                or_(
+                    Alumno.nombre.ilike(term),
+                    Alumno.apellido.ilike(term),
+                    Alumno.dni_hash == dni_hash_q,
+                )
             )
-        )
+        else:
+            stmt = stmt.where(
+                or_(
+                    Alumno.nombre.ilike(term),
+                    Alumno.apellido.ilike(term),
+                )
+            )
 
     rows = db.exec(stmt).all()
-
     items: list[AlumnoCicloRow] = []
     ids_incluidos: set[int] = set()
 
@@ -688,7 +667,7 @@ def get_alumnos_historial_por_ciclo(
                 parentesco=parentesco,
                 nro_celular=getattr(resp, "nro_celular", None),
                 email=getattr(resp, "email", None),
-                direccion=getattr(resp, "direccion", None),
+                direccion=decrypt(resp.direccion) if getattr(resp, "direccion", None) else None,
             )
 
         items.append(
@@ -696,29 +675,23 @@ def get_alumnos_historial_por_ciclo(
                 idAlumno=int(alumno.idAlumno),
                 nombre=str(alumno.nombre),
                 apellido=str(alumno.apellido),
-                dni=str(alumno.dni),
-
+                dni=decrypt(alumno.dni) if alumno.dni else str(alumno.dni),
                 idCurso=int(curso.idCurso),
                 nombreCurso=f"{curso.nombre} {curso.division}".strip(),
-
                 estadoAlumno=str(getattr(alumno, "estado", "Activo") or "Activo"),
                 activoInscripcion=bool(insc.activo),
                 estadoInscripcion=insc.estado,
-
                 idCursoActual=int(curso_actual.idCurso) if curso_actual else None,
                 cursoActualNombre=(f"{curso_actual.nombre} {curso_actual.division}".strip() if curso_actual else None),
-
                 responsable=responsable_public,
             )
         )
 
-    # 4) EXTRA: alumnos sin curso (Preinscripcion Pendiente) en ese ciclo
-    #    Solo los agregamos cuando solo_activos=False (si pedís solo activos, no corresponde incluir preinscriptos).
+    # Preinscriptos sin curso
     if not solo_activos:
         stmt_pre = (
             select(Alumno, Responsable, Parentesco.parentesco)
             .join(Preinscripcion, Preinscripcion.idAlumno == Alumno.idAlumno)
-
             .outerjoin(sub_resp, sub_resp.c.idAlumno == Alumno.idAlumno)
             .outerjoin(Responsable, Responsable.idResponsable == sub_resp.c.idResponsable)
             .outerjoin(
@@ -732,18 +705,26 @@ def get_alumnos_historial_por_ciclo(
         )
 
         if q:
-            term = f"%{q.strip()}%"
-            stmt_pre = stmt_pre.where(
-                or_(
-                    Alumno.nombre.ilike(term),
-                    Alumno.apellido.ilike(term),
-                    Alumno.dni.ilike(term),
+            q_clean = q.strip()
+            term = f"%{q_clean}%"
+            if q_clean.isdigit():
+                dni_hash_q = hash_for_search(q_clean)
+                stmt_pre = stmt_pre.where(
+                    or_(
+                        Alumno.nombre.ilike(term),
+                        Alumno.apellido.ilike(term),
+                        Alumno.dni_hash == dni_hash_q,
+                    )
                 )
-            )
+            else:
+                stmt_pre = stmt_pre.where(
+                    or_(
+                        Alumno.nombre.ilike(term),
+                        Alumno.apellido.ilike(term),
+                    )
+                )
 
-        rows_pre = db.exec(stmt_pre).all()
-
-        for alumno, resp, parentesco in rows_pre:
+        for alumno, resp, parentesco in db.exec(stmt_pre).all():
             if int(alumno.idAlumno) in ids_incluidos:
                 continue
 
@@ -756,7 +737,7 @@ def get_alumnos_historial_por_ciclo(
                     parentesco=parentesco,
                     nro_celular=getattr(resp, "nro_celular", None),
                     email=getattr(resp, "email", None),
-                    direccion=getattr(resp, "direccion", None),
+                    direccion=decrypt(resp.direccion) if getattr(resp, "direccion", None) else None,
                 )
 
             items.append(
@@ -764,34 +745,31 @@ def get_alumnos_historial_por_ciclo(
                     idAlumno=int(alumno.idAlumno),
                     nombre=str(alumno.nombre),
                     apellido=str(alumno.apellido),
-                    dni=str(alumno.dni),
-
+                    dni=decrypt(alumno.dni) if alumno.dni else str(alumno.dni),
                     idCurso=0,
                     nombreCurso="Sin asignar",
-
-                    # como no hay inscripto en ese ciclo:
                     idCursoActual=None,
                     cursoActualNombre=None,
-
                     estadoAlumno=str(getattr(alumno, "estado", "Activo") or "Activo"),
                     activoInscripcion=False,
                     estadoInscripcion=EstadoInscripcion.Activo,
-
                     responsable=responsable_public,
                 )
             )
 
-    # 5) ordenar + paginar
     items.sort(key=lambda x: ((x.apellido or "").lower(), (x.nombre or "").lower()))
     total = len(items)
-    paged = items[offset : offset + limit]
-
+    paged = items[offset: offset + limit]
     return AlumnoCicloPage(total=total, items=paged)
+
+
+# ==============================================================
+# BUSCAR POR DNI
+# ==============================================================
 
 def buscar_alumno_por_dni(db: SessionDep, dni: str, current_user) -> dict:
     user_id = int(current_user.idUsuario)
 
-    # Solo directores o admin global pueden usar esta búsqueda
     if not _is_admin_global(db, user_id):
         stmt_rol = (
             select(Rol)
@@ -806,7 +784,6 @@ def buscar_alumno_por_dni(db: SessionDep, dni: str, current_user) -> dict:
     if not alumno:
         raise HTTPException(status_code=404, detail="No existe ningún alumno con ese DNI")
 
-    # Verificar si tiene inscripción activa
     stmt_insc = (
         select(Inscriptos, Curso)
         .join(Curso, Curso.idCurso == Inscriptos.idCurso)
@@ -821,8 +798,6 @@ def buscar_alumno_por_dni(db: SessionDep, dni: str, current_user) -> dict:
 
     if row:
         insc, curso = row
-        # Buscar nombre de la escuela
-        from app.models.escuela import Escuela
         escuela = db.exec(select(Escuela).where(Escuela.CUE == curso.CUE)).first()
         escuela_activa = escuela.nombre if escuela else f"CUE {curso.CUE}"
 
@@ -830,8 +805,8 @@ def buscar_alumno_por_dni(db: SessionDep, dni: str, current_user) -> dict:
         "idAlumno": alumno.idAlumno,
         "nombre": alumno.nombre,
         "apellido": alumno.apellido,
-        "dni": alumno.dni,
-        "fecha_nacimiento": str(alumno.fecha_nacimiento),
+        "dni": decrypt(alumno.dni) if alumno.dni else alumno.dni,
+        "fecha_nacimiento": decrypt(alumno.fecha_nacimiento) if alumno.fecha_nacimiento else None,
         "tiene_inscripcion_activa": tiene_activa,
         "escuela_activa": escuela_activa,
     }
