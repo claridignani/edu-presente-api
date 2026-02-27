@@ -2,10 +2,10 @@
 from datetime import date
 from typing import Annotated, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
 
 from app.dependencies import SessionDep
-from app.schemas.asistencia import AsistenciaCreate
+from app.schemas.asistencia import AsistenciaCreate, AsistenciaPublic
 from app.services.asistencia_service import (
     upsert_asistencia,
     upsert_asistencias_bulk,
@@ -20,10 +20,15 @@ from app.services.asistencia_service import (
     stats_riesgo_por_curso,
     stats_lluvia_comparativo,
     alertas_inasistencias_consecutivas,
-    stats_dias_semana
+    stats_dias_semana,
+    stats_alumnos_por_rango,          # ← NUEVO
+    upsert_asistencias_por_curso_fecha,
+    upsert_asistencias_por_curso_rango
 )
 from app.services.whatsapp_service import enviar_plantilla_inasistencia
-
+from app.schemas.asistencia_bulk_curso import AsistenciaCursoFechaBulkRequest, AsistenciaCursoRangoBulkRequest
+from app.dependencies.auth import get_current_user
+from app.models.usuario import Usuario
 router = APIRouter(prefix="/asistencias", tags=["Asistencias"])
 
 
@@ -72,6 +77,7 @@ def read_stats_resumen(
     curso_ids: Optional[list[int]] = Query(default=None),
     umbral: int = Query(default=20, ge=1),
     umbral_riesgo: int = Query(default=20, ge=1),
+    soloLluvia: Optional[bool] = Query(default=None),   # ← NUEVO
 ):
     cursos = cursoIds if cursoIds is not None else curso_ids
     umb = umbral if umbral is not None else umbral_riesgo
@@ -83,6 +89,7 @@ def read_stats_resumen(
         hasta=hasta,
         curso_ids=cursos,
         umbral_riesgo=umb,
+        solo_lluvia=soloLluvia,                         # ← NUEVO
     )
 
 
@@ -175,6 +182,7 @@ def read_stats_dias_semana(
     hasta: date,
     cursoIds: Optional[list[int]] = Query(default=None),
     curso_ids: Optional[list[int]] = Query(default=None),
+    soloLluvia: Optional[bool] = Query(default=None),   # ← NUEVO
 ):
     cursos = cursoIds if cursoIds is not None else curso_ids
 
@@ -184,7 +192,36 @@ def read_stats_dias_semana(
         desde=desde,
         hasta=hasta,
         curso_ids=cursos,
+        solo_lluvia=soloLluvia,                         # ← NUEVO
     )
+
+# ── NUEVO ────────────────────────────────────────────────────────────────────
+@router.get("/stats/alumnos-por-rango")
+def read_stats_alumnos_por_rango(
+    session: SessionDep,
+    cue: str,
+    desde: date,
+    hasta: date,
+    rango: str = Query(..., description="Formato: '0-10', '11-20', '57+'"),
+    cursoIds: Optional[list[int]] = Query(default=None),
+    curso_ids: Optional[list[int]] = Query(default=None),
+):
+    """
+    Lista de alumnos con sus ausencias totales para un rango específico.
+    Usado por el gráfico de distribución (click en barra).
+    """
+    cursos = cursoIds if cursoIds is not None else curso_ids
+
+    return stats_alumnos_por_rango(
+        db=session,
+        cue=cue,
+        desde=desde,
+        hasta=hasta,
+        rango=rango,
+        curso_ids=cursos,
+    )
+# ─────────────────────────────────────────────────────────────────────────────
+
 
 # ==========================
 # ✅ Alertas (Asistente Social)
@@ -198,10 +235,6 @@ def read_alertas_inasistencias_consecutivas(
     hasta: date,
     min: int = Query(default=3, ge=2, le=30),
 ):
-    """
-    Alumnos con AUSENCIAS consecutivas (>= min) en el rango.
-    'min=3' equivale a 'más de 2 seguidas'.
-    """
     return alertas_inasistencias_consecutivas(
         db=session,
         cue=cue,
@@ -211,7 +244,7 @@ def read_alertas_inasistencias_consecutivas(
     )
 
 # ==========================
-# Reads (más específicas arriba)
+# Reads
 # ==========================
 
 @router.get("/one/{idCurso}/{idAlumno}/{fecha}", response_model=AsistenciaCreate)
@@ -322,6 +355,46 @@ def read_asistencias_by_curso_fecha(
     ]
 
 @router.post("/asistencia/notificar")
-async def registrar_asistencia(telefono: str,apellido: str, nombre: str, dni: str, session: SessionDep):
+async def registrar_asistencia(telefono: str, apellido: str, nombre: str, dni: str, session: SessionDep):
     await enviar_plantilla_inasistencia(telefono=telefono, apellido=apellido, nombre=nombre, dni=dni)
     return {"ok": True}
+
+@router.post("/cursos/{idCurso}/bulk-fecha", response_model=list[AsistenciaPublic])
+def cargar_asistencia_curso_bulk_fecha(
+    idCurso: int,
+    payload: AsistenciaCursoFechaBulkRequest,
+    session: SessionDep,
+    current_user: Usuario = Depends(get_current_user),
+):
+    overrides = [(o.idAlumno, o.estado, o.lluvia) for o in payload.overrides]
+
+    return upsert_asistencias_por_curso_fecha(
+        db=session,
+        idCurso=idCurso,
+        fecha=payload.fecha,
+        default_estado=payload.default_estado,
+        lluvia=payload.lluvia,
+        overrides=overrides,
+    )
+
+@router.post("/cursos/{idCurso}/bulk-rango")
+def cargar_asistencia_curso_bulk_rango(
+    idCurso: int,
+    payload: AsistenciaCursoRangoBulkRequest,
+    session: SessionDep,
+    current_user: Usuario = Depends(get_current_user),
+):
+    overrides = [(o.idAlumno, o.estado, o.lluvia) for o in payload.overrides]
+
+    total = upsert_asistencias_por_curso_rango(
+        db=session,
+        idCurso=idCurso,
+        desde=payload.desde,
+        hasta=payload.hasta,
+        weekdays=payload.weekdays,
+        default_estado=payload.default_estado,
+        lluvia=payload.lluvia,
+        overrides=overrides,
+        solo_alumnos=payload.solo_alumnos,
+    )
+    return {"ok": True, "registros": total}

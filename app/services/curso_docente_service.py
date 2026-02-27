@@ -9,6 +9,7 @@ from app.schemas.rol import RolDescripcion, RolEstado
 from app.models.usuario import Usuario
 from app.schemas.curso_docente import CursoDocenteDetalle
 from app.services.rol_service import get_one_rol
+from app.core.encryption import decrypt
 
 
 def asignar_docente_a_curso(
@@ -116,7 +117,7 @@ def listar_docentes_detalle_de_curso(db, idCurso: int):
             idUsuario=r[1],
             nombre=r[2],
             apellido=r[3],
-            dni=r[4],
+            dni=decrypt(r[4]) if r[4] else r[4],   # ← FIX
             tipo=r[5],
             fechaDesde=r[6],
             fechaHasta=r[7],

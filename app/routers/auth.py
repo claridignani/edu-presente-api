@@ -14,13 +14,17 @@ logger = logging.getLogger(__name__)
 
 @router.post("/", response_model=LoginResponse)
 def login(data: LoginRequest, session: SessionDep):
-    # 1) Buscar usuario
+    # 1) Buscar usuario por DNI
     user = get_usuario_by_dni(db=session, dni=data.dni)
 
-    # 2) Validación
-    if not user or not verify_password(plain_password=data.password, hashed_password=user.contrasena):
-        logger.warning(f"Login fallido para DNI: {data.dni}")
-        raise HTTPException(status_code=401, detail="Credenciales incorrectas")
+    # 2) Validaciones separadas para mensajes distintos en el frontend
+    if not user:
+        logger.warning(f"Login fallido — DNI no encontrado: {data.dni}")
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    if not verify_password(plain_password=data.password, hashed_password=user.contrasena):
+        logger.warning(f"Login fallido — contraseña incorrecta para DNI: {data.dni}")
+        raise HTTPException(status_code=401, detail="Contraseña incorrecta")
 
     # 3) Traer roles + escuela
     try:
@@ -56,13 +60,11 @@ def login(data: LoginRequest, session: SessionDep):
         logger.warning(f"Usuario {user.idUsuario} sin roles activos válidos.")
         raise HTTPException(status_code=403, detail="Usuario pendiente de aprobación o sin roles asignados.")
 
-    # ✅ 4) Emitir JWT: el backend ya puede saber “quién fue”
-    # sub = idUsuario; NO metemos CUE/rol activo porque eso lo elige el front
+    # 4) Emitir JWT
     token = create_access_token({"sub": str(user.idUsuario)})
 
     logger.info(f"Login exitoso: {user.dni}")
 
-    # Nota: esto requiere que LoginResponse tenga access_token y token_type (lo ajustamos abajo)
     return LoginResponse(
         mensaje="Login exitoso",
         usuario_id=user.idUsuario,
