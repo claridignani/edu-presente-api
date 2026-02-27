@@ -37,8 +37,8 @@ router = APIRouter(prefix="/asistencias", tags=["Asistencias"])
 # ==========================
 
 @router.post("/", response_model=AsistenciaCreate)
-def create_or_update_asistencia(payload: AsistenciaCreate, session: SessionDep):
-    row = upsert_asistencia(db=session, payload=payload)
+async def create_or_update_asistencia(payload: AsistenciaCreate, session: SessionDep):
+    row = await upsert_asistencia(db=session, payload=payload)
     return AsistenciaCreate(
         idCurso=row.idCurso,
         idAlumno=row.idAlumno,
@@ -46,7 +46,6 @@ def create_or_update_asistencia(payload: AsistenciaCreate, session: SessionDep):
         estado=row.estado,
         lluvia=row.lluvia,
     )
-
 
 @router.post("/bulk", response_model=list[AsistenciaCreate])
 def create_or_update_asistencias_bulk(payloads: list[AsistenciaCreate], session: SessionDep):
@@ -61,7 +60,6 @@ def create_or_update_asistencias_bulk(payloads: list[AsistenciaCreate], session:
         )
         for r in rows
     ]
-
 
 # ==========================
 # ✅ Estadísticas (Director)
