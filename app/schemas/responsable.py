@@ -14,6 +14,8 @@ class ResponsableBase(SQLModel):
     email: str = Field(index=True, max_length=255)          # no se encripta
     nro_celular: str = Field(max_length=15)                 # no se encripta
     direccion: str = Field(max_length=255)                  # ampliado para encriptado
+    localidad: Optional[str] = Field(default=None, max_length=100)   # ← nuevo
+    provincia: Optional[str] = Field(default=None, max_length=100)   # ← nuevo
 
 
 class ResponsablePublic(SQLModel):
@@ -25,6 +27,8 @@ class ResponsablePublic(SQLModel):
     email: str
     nro_celular: str
     direccion: str
+    localidad: Optional[str] = None   # ← nuevo
+    provincia: Optional[str] = None   # ← nuevo
 
     @model_validator(mode="after")
     def decrypt_fields(self):
@@ -71,6 +75,8 @@ class ResponsableUpdate(SQLModel):
     email: str | None = None
     nro_celular: str | None = None
     direccion: str | None = None
+    localidad: str | None = None   # ← nuevo
+    provincia: str | None = None   # ← nuevo
 
     @field_validator("dni", mode="before")
     @classmethod

@@ -20,6 +20,8 @@ class AlumnoBase(SQLModel):
     fecha_nacimiento: str = Field(max_length=255)   # str porque se guarda encriptado
     fecha_ingreso: date = Field()
     direccion: str = Field(max_length=255)
+    localidad: Optional[str] = Field(default=None, max_length=100)   # ← nuevo
+    provincia: Optional[str] = Field(default=None, max_length=100)   # ← nuevo
     estado: AlumnoEstado = Field(default=AlumnoEstado.Inactivo)
 
 
@@ -70,6 +72,8 @@ class AlumnoUpdate(SQLModel):
     fecha_nacimiento: Optional[str] = None
     fecha_ingreso: Optional[date] = None
     direccion: Optional[str] = None
+    localidad: Optional[str] = None   # ← nuevo
+    provincia: Optional[str] = None   # ← nuevo
     estado: Optional[AlumnoEstado] = None
 
     @field_validator("dni", mode="before")
