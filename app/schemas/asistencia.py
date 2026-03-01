@@ -16,6 +16,13 @@ class AsistenciaBase(SQLModel):
     motivo_ausencia: str | None = Field(default=None)
 
 
+# ✅ Schema de LECTURA completo (para frontend / historial / stats)
+class AsistenciaRead(AsistenciaBase):
+    idCurso: int
+    idAlumno: int
+    fecha: date
+
+
 class AsistenciaPublic(AsistenciaBase):
     idAlumno: int
 

@@ -5,7 +5,7 @@ from typing import Annotated, Optional
 from fastapi import APIRouter, HTTPException, Query, Depends
 
 from app.dependencies import SessionDep
-from app.schemas.asistencia import AsistenciaCreate, AsistenciaPublic
+from app.schemas.asistencia import AsistenciaCreate, AsistenciaPublic, AsistenciaRead  # ← agregar AsistenciaRead
 from app.services.asistencia_service import (
     upsert_asistencia,
     upsert_asistencias_bulk,
@@ -21,7 +21,7 @@ from app.services.asistencia_service import (
     stats_lluvia_comparativo,
     alertas_inasistencias_consecutivas,
     stats_dias_semana,
-    stats_alumnos_por_rango,          # ← NUEVO
+    stats_alumnos_por_rango,
     upsert_asistencias_por_curso_fecha,
     upsert_asistencias_por_curso_rango
 )
@@ -29,40 +29,44 @@ from app.services.whatsapp_service import enviar_plantilla_inasistencia
 from app.schemas.asistencia_bulk_curso import AsistenciaCursoFechaBulkRequest, AsistenciaCursoRangoBulkRequest
 from app.dependencies.auth import get_current_user
 from app.models.usuario import Usuario
+
 router = APIRouter(prefix="/asistencias", tags=["Asistencias"])
+
+
+# ==========================
+# Helpers
+# ==========================
+
+def _to_read(r) -> AsistenciaRead:
+    return AsistenciaRead(
+        idCurso=r.idCurso,
+        idAlumno=r.idAlumno,
+        fecha=r.fecha,
+        estado=r.estado,
+        lluvia=r.lluvia,
+        wamid=r.wamid,
+        motivo_ausencia=r.motivo_ausencia,  # ← el campo que faltaba
+    )
 
 
 # ==========================
 # Create / Upsert
 # ==========================
 
-@router.post("/", response_model=AsistenciaCreate)
+@router.post("/", response_model=AsistenciaRead)
 async def create_or_update_asistencia(payload: AsistenciaCreate, session: SessionDep):
     row = await upsert_asistencia(db=session, payload=payload)
-    return AsistenciaCreate(
-        idCurso=row.idCurso,
-        idAlumno=row.idAlumno,
-        fecha=row.fecha,
-        estado=row.estado,
-        lluvia=row.lluvia,
-    )
+    return _to_read(row)
 
-@router.post("/bulk", response_model=list[AsistenciaCreate])
+
+@router.post("/bulk", response_model=list[AsistenciaRead])
 async def create_or_update_asistencias_bulk(payloads: list[AsistenciaCreate], session: SessionDep):
     rows = await upsert_asistencias_bulk(db=session, payloads=payloads)
-    return [
-        AsistenciaCreate(
-            idCurso=r.idCurso,
-            idAlumno=r.idAlumno,
-            fecha=r.fecha,
-            estado=r.estado,
-            lluvia=r.lluvia,
-        )
-        for r in rows
-    ]
+    return [_to_read(r) for r in rows]
+
 
 # ==========================
-# ✅ Estadísticas (Director)
+# Estadísticas (Director)
 # ==========================
 
 @router.get("/stats/resumen")
@@ -75,7 +79,7 @@ def read_stats_resumen(
     curso_ids: Optional[list[int]] = Query(default=None),
     umbral: int = Query(default=20, ge=1),
     umbral_riesgo: int = Query(default=20, ge=1),
-    soloLluvia: Optional[bool] = Query(default=None),   # ← NUEVO
+    soloLluvia: Optional[bool] = Query(default=None),
 ):
     cursos = cursoIds if cursoIds is not None else curso_ids
     umb = umbral if umbral is not None else umbral_riesgo
@@ -87,7 +91,7 @@ def read_stats_resumen(
         hasta=hasta,
         curso_ids=cursos,
         umbral_riesgo=umb,
-        solo_lluvia=soloLluvia,                         # ← NUEVO
+        solo_lluvia=soloLluvia,
     )
 
 
@@ -110,6 +114,7 @@ def read_stats_serie(
         curso_ids=curso_ids,
         solo_lluvia=solo_lluvia,
     )
+
 
 @router.get("/stats/distribucion")
 def read_stats_distribucion(
@@ -172,6 +177,7 @@ def read_stats_lluvia(
         curso_ids=cursos,
     )
 
+
 @router.get("/stats/dias-semana")
 def read_stats_dias_semana(
     session: SessionDep,
@@ -180,7 +186,7 @@ def read_stats_dias_semana(
     hasta: date,
     cursoIds: Optional[list[int]] = Query(default=None),
     curso_ids: Optional[list[int]] = Query(default=None),
-    soloLluvia: Optional[bool] = Query(default=None),   # ← NUEVO
+    soloLluvia: Optional[bool] = Query(default=None),
 ):
     cursos = cursoIds if cursoIds is not None else curso_ids
 
@@ -190,10 +196,10 @@ def read_stats_dias_semana(
         desde=desde,
         hasta=hasta,
         curso_ids=cursos,
-        solo_lluvia=soloLluvia,                         # ← NUEVO
+        solo_lluvia=soloLluvia,
     )
 
-# ── NUEVO ────────────────────────────────────────────────────────────────────
+
 @router.get("/stats/alumnos-por-rango")
 def read_stats_alumnos_por_rango(
     session: SessionDep,
@@ -204,10 +210,6 @@ def read_stats_alumnos_por_rango(
     cursoIds: Optional[list[int]] = Query(default=None),
     curso_ids: Optional[list[int]] = Query(default=None),
 ):
-    """
-    Lista de alumnos con sus ausencias totales para un rango específico.
-    Usado por el gráfico de distribución (click en barra).
-    """
     cursos = cursoIds if cursoIds is not None else curso_ids
 
     return stats_alumnos_por_rango(
@@ -218,11 +220,10 @@ def read_stats_alumnos_por_rango(
         rango=rango,
         curso_ids=cursos,
     )
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 # ==========================
-# ✅ Alertas (Asistente Social)
+# Alertas (Asistente Social)
 # ==========================
 
 @router.get("/alertas/consecutivas")
@@ -241,11 +242,12 @@ def read_alertas_inasistencias_consecutivas(
         min_consecutivas=min,
     )
 
+
 # ==========================
 # Reads
 # ==========================
 
-@router.get("/one/{idCurso}/{idAlumno}/{fecha}", response_model=AsistenciaCreate)
+@router.get("/one/{idCurso}/{idAlumno}/{fecha}", response_model=AsistenciaRead)
 def read_one_asistencia(
     idCurso: int,
     idAlumno: int,
@@ -255,17 +257,10 @@ def read_one_asistencia(
     row = get_one_asistencia(db=session, idCurso=idCurso, idAlumno=idAlumno, fecha=fecha)
     if not row:
         raise HTTPException(status_code=404, detail="Asistencia no encontrada")
-
-    return AsistenciaCreate(
-        idCurso=row.idCurso,
-        idAlumno=row.idAlumno,
-        fecha=row.fecha,
-        estado=row.estado,
-        lluvia=row.lluvia,
-    )
+    return _to_read(row)
 
 
-@router.get("/curso/{idCurso}/alumno/{idAlumno}", response_model=list[AsistenciaCreate])
+@router.get("/curso/{idCurso}/alumno/{idAlumno}", response_model=list[AsistenciaRead])
 def read_asistencias_by_curso_alumno(
     idCurso: int,
     idAlumno: int,
@@ -282,19 +277,10 @@ def read_asistencias_by_curso_alumno(
         offset=offset,
         limit=limit,
     )
-    return [
-        AsistenciaCreate(
-            idCurso=r.idCurso,
-            idAlumno=r.idAlumno,
-            fecha=r.fecha,
-            estado=r.estado,
-            lluvia=r.lluvia,
-        )
-        for r in rows
-    ]
+    return [_to_read(r) for r in rows]
 
 
-@router.get("/alumno/{idAlumno}", response_model=list[AsistenciaCreate])
+@router.get("/alumno/{idAlumno}", response_model=list[AsistenciaRead])
 def read_asistencias_by_alumno(
     idAlumno: int,
     session: SessionDep,
@@ -302,19 +288,10 @@ def read_asistencias_by_alumno(
     limit: Annotated[int, Query(le=500)] = 200,
 ):
     rows = get_asistencias_by_alumno(db=session, idAlumno=idAlumno, offset=offset, limit=limit)
-    return [
-        AsistenciaCreate(
-            idCurso=r.idCurso,
-            idAlumno=r.idAlumno,
-            fecha=r.fecha,
-            estado=r.estado,
-            lluvia=r.lluvia,
-        )
-        for r in rows
-    ]
+    return [_to_read(r) for r in rows]
 
 
-@router.get("/curso/{idCurso}", response_model=list[AsistenciaCreate])
+@router.get("/curso/{idCurso}", response_model=list[AsistenciaRead])
 def read_asistencias_by_curso(
     idCurso: int,
     session: SessionDep,
@@ -323,36 +300,23 @@ def read_asistencias_by_curso(
     desde: Optional[date] = Query(default=None),      
     hasta: Optional[date] = Query(default=None),      
 ):
-    rows = get_asistencias_by_curso(
-        db=session, idCurso=idCurso, offset=offset, limit=limit,
-        desde=desde, hasta=hasta                       
-    )
-    return [
-        AsistenciaCreate(
-            idCurso=r.idCurso, idAlumno=r.idAlumno,
-            fecha=r.fecha, estado=r.estado, lluvia=r.lluvia,
-        )
-        for r in rows
-    ]
+    rows = get_asistencias_by_curso(db=session, idCurso=idCurso, offset=offset, limit=limit)
+    return [_to_read(r) for r in rows]
 
 
-@router.get("/{idCurso}/{fecha}", response_model=list[AsistenciaCreate])
+@router.get("/{idCurso}/{fecha}", response_model=list[AsistenciaRead])
 def read_asistencias_by_curso_fecha(
     idCurso: int,
     fecha: date,
     session: SessionDep,
 ):
     rows = get_asistencias_by_curso_fecha(db=session, idCurso=idCurso, fecha=fecha)
-    return [
-        AsistenciaCreate(
-            idCurso=r.idCurso,
-            idAlumno=r.idAlumno,
-            fecha=r.fecha,
-            estado=r.estado,
-            lluvia=r.lluvia,
-        )
-        for r in rows
-    ]
+    return [_to_read(r) for r in rows]
+
+
+# ==========================
+# Notificaciones / Bulk
+# ==========================
 
 @router.post("/asistencia/notificar")
 async def registrar_asistencia(
@@ -365,6 +329,7 @@ async def registrar_asistencia(
 ):
     await enviar_plantilla_inasistencia(telefono=telefono, apellido=apellido, nombre=nombre, dni=dni)
     return {"ok": True}
+
 
 @router.post("/cursos/{idCurso}/bulk-fecha", response_model=list[AsistenciaPublic])
 async def cargar_asistencia_curso_bulk_fecha(
@@ -383,6 +348,7 @@ async def cargar_asistencia_curso_bulk_fecha(
         lluvia=payload.lluvia,
         overrides=overrides,
     )
+
 
 @router.post("/cursos/{idCurso}/bulk-rango")
 async def cargar_asistencia_curso_bulk_rango(
