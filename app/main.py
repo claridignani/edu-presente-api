@@ -19,7 +19,8 @@ from app.routers.ia import router as ia_router
 from app.routers.inscriptos_admin import router as inscriptos_admin_router
 from app.routers.alertas import router as alertas_router
 from app.routers.preinscripcion import router as preinscripcion_router
-from app.routers.webhook import router as whatsapp_webhook_router
+from app.routers.webhook import router as webhook_router
+
 from app.routers.escuela_public import router as escuela_public_router
 from app.routers.invitacion_public import router as invitacion_public_router
 from app.routers.usuario_public import router as usuario_public_router
@@ -60,6 +61,7 @@ app.include_router(escuela_public_router)
 app.include_router(invitacion_public_router)
 app.include_router(usuario_public_router)
 app.include_router(preinscripcion_router)
+app.include_router(webhook_router)
 
 
 # ✅ PRIVADO (con JWT)

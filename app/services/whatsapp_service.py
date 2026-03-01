@@ -1,9 +1,25 @@
+import re
 import httpx
 from fastapi import HTTPException
 from app.core.config import VERSION, PHONE_NUMBER_ID, WHATSAPP_TOKEN
 from sqlmodel import select
 from app.dependencies import SessionDep
 from app.models.asistencia import Asistencia
+
+
+def _normalizar_telefono(telefono: str) -> str:
+    """Normaliza un número de teléfono al formato internacional requerido por Meta.
+    Ejemplo: '011-1234-5678' -> '5411 12345678', '5491112345678' -> '5491112345678'
+    """
+    solo_digitos = re.sub(r"\D", "", str(telefono).strip())
+    # Remover 0 inicial (código de área local argentino)
+    if solo_digitos.startswith("0"):
+        solo_digitos = solo_digitos[1:]
+    # Agregar código de país si no lo tiene
+    if not solo_digitos.startswith("54"):
+        solo_digitos = f"54{solo_digitos}"
+    return solo_digitos
+
 
 
 async def enviar_plantilla_inasistencia(telefono: str, apellido: str, nombre: str, dni: str):
@@ -20,7 +36,7 @@ async def enviar_plantilla_inasistencia(telefono: str, apellido: str, nombre: st
     payload = {
         "messaging_product": "whatsapp",
         "recipient_type": "individual", 
-        "to": str(telefono).strip(), 
+        "to": _normalizar_telefono(telefono), 
         "type": "template",
         "template": {
             "name": "inasistencia",

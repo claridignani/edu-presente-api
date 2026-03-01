@@ -23,6 +23,7 @@ from app.core.encryption import decrypt, hash_for_search
 from app.services.whatsapp_service import enviar_plantilla_inasistencia
 from collections import defaultdict
 from app.models.inscriptos import Inscriptos
+from app.models.responsable import Responsable
 
 
 # ==========================
@@ -63,6 +64,33 @@ def ensure_alumnos_exist(db: SessionDep, ids_alumnos: Iterable[int]):
 # Create / Upsert (uno)
 # ==========================
 
+async def _enviar_whatsapp_a_responsables(alumno: Alumno, db: SessionDep) -> str | None:
+    """Envía notificación WhatsApp a TODOS los responsables con teléfono.
+    Retorna el wamid del último mensaje enviado (para vincular respuesta).
+    """
+    ultimo_wamid = None
+    if not alumno or not alumno.responsables:
+        return None
+
+    dni_plain = decrypt(alumno.dni) if alumno.dni else ""
+
+    for responsable in alumno.responsables:
+        if not responsable.nro_celular:
+            continue
+        try:
+            wamid = await enviar_plantilla_inasistencia(
+                telefono=responsable.nro_celular,
+                apellido=alumno.apellido,
+                nombre=alumno.nombre,
+                dni=dni_plain,
+            )
+            ultimo_wamid = wamid
+        except Exception as e:
+            print(f"Error enviando WhatsApp al responsable {responsable.nombre} de {alumno.nombre}: {e}")
+
+    return ultimo_wamid
+
+
 async def upsert_asistencia(db: SessionDep, payload: AsistenciaCreate) -> Asistencia:
     """
     Crea o actualiza (upsert) una asistencia por PK compuesta:
@@ -73,31 +101,16 @@ async def upsert_asistencia(db: SessionDep, payload: AsistenciaCreate) -> Asiste
 
     if payload.estado == "Ausente":
         alumno = db.get(Alumno, payload.idAlumno)
-        
-        if alumno and alumno.responsables:
-            telefono_destino = None
-            for responsable in alumno.responsables:
-                if responsable.nro_celular:
-                    telefono_destino = responsable.nro_celular
-                    break  
-            
-            if telefono_destino:
-                try:
-                    wamid_generado = await enviar_plantilla_inasistencia(
-                        telefono=telefono_destino,
-                        apellido=alumno.apellido,
-                        nombre=alumno.nombre,
-                        dni=alumno.dni
-                    )
-                    payload.wamid = wamid_generado 
-                except Exception as e:
-                    print(f"Error enviando WhatsApp al responsable de {alumno.nombre}: {e}")
+        wamid_generado = await _enviar_whatsapp_a_responsables(alumno, db)
+        if wamid_generado:
+            payload.wamid = wamid_generado
 
     existente = get_one_asistencia(db, payload.idCurso, payload.idAlumno, payload.fecha)
 
     if existente:
         existente.estado = payload.estado
         existente.lluvia = payload.lluvia
+        existente.wamid = payload.wamid
         db.add(existente)
         db.commit()
         db.refresh(existente)
@@ -128,7 +141,7 @@ async def upsert_asistencia(db: SessionDep, payload: AsistenciaCreate) -> Asiste
 # Bulk Upsert
 # ==========================
 
-def upsert_asistencias_bulk(db: SessionDep, payloads: list[AsistenciaCreate]) -> list[Asistencia]:
+async def upsert_asistencias_bulk(db: SessionDep, payloads: list[AsistenciaCreate]) -> list[Asistencia]:
     if not payloads:
         return []
 
@@ -162,6 +175,20 @@ def upsert_asistencias_bulk(db: SessionDep, payloads: list[AsistenciaCreate]) ->
     check_y_crear_alertas_tardanzas_para_curso_fecha(
         db=db, idCurso=any_row.idCurso, fecha=any_row.fecha, umbral=3
     )
+
+    # Fix 3: Enviar WhatsApp a responsables de alumnos ausentes
+    ausentes_ids = list({p.idAlumno for p in payloads if p.estado == "Ausente"})
+    for idAlumno in ausentes_ids:
+        alumno = db.get(Alumno, idAlumno)
+        wamid = await _enviar_whatsapp_a_responsables(alumno, db)
+        if wamid:
+            # Actualizar wamid en el registro de asistencia
+            for row in out:
+                if row.idAlumno == idAlumno and row.estado == "Ausente":
+                    row.wamid = wamid
+                    db.add(row)
+            db.commit()
+
     return out
 
 
@@ -700,7 +727,7 @@ def get_alumnos_activos_de_curso(db: SessionDep, idCurso: int) -> list[int]:
     return [int(r[0] if isinstance(r, tuple) else r) for r in rows]
 
 
-def upsert_asistencias_por_curso_fecha(
+async def upsert_asistencias_por_curso_fecha(
     db: SessionDep,
     idCurso: int,
     fecha: date,
@@ -735,10 +762,10 @@ def upsert_asistencias_por_curso_fecha(
                 estado=default_estado, lluvia=lluvia,
             ))
 
-    return upsert_asistencias_bulk(db=db, payloads=payloads)
+    return await upsert_asistencias_bulk(db=db, payloads=payloads)
 
 
-def upsert_asistencias_por_curso_rango(
+async def upsert_asistencias_por_curso_rango(
     db: SessionDep,
     idCurso: int,
     desde: date,
@@ -793,7 +820,7 @@ def upsert_asistencias_por_curso_rango(
                 ))
 
             if len(buffer) >= chunk_size:
-                upsert_asistencias_bulk(db, buffer)
+                await upsert_asistencias_bulk(db, buffer)
                 total += len(buffer)
                 buffer.clear()
 
