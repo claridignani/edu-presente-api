@@ -48,8 +48,8 @@ async def create_or_update_asistencia(payload: AsistenciaCreate, session: Sessio
     )
 
 @router.post("/bulk", response_model=list[AsistenciaCreate])
-def create_or_update_asistencias_bulk(payloads: list[AsistenciaCreate], session: SessionDep):
-    rows = upsert_asistencias_bulk(db=session, payloads=payloads)
+async def create_or_update_asistencias_bulk(payloads: list[AsistenciaCreate], session: SessionDep):
+    rows = await upsert_asistencias_bulk(db=session, payloads=payloads)
     return [
         AsistenciaCreate(
             idCurso=r.idCurso,
@@ -353,12 +353,19 @@ def read_asistencias_by_curso_fecha(
     ]
 
 @router.post("/asistencia/notificar")
-async def registrar_asistencia(telefono: str, apellido: str, nombre: str, dni: str, session: SessionDep):
+async def registrar_asistencia(
+    telefono: str,
+    apellido: str,
+    nombre: str,
+    dni: str,
+    session: SessionDep,
+    current_user: Usuario = Depends(get_current_user),
+):
     await enviar_plantilla_inasistencia(telefono=telefono, apellido=apellido, nombre=nombre, dni=dni)
     return {"ok": True}
 
 @router.post("/cursos/{idCurso}/bulk-fecha", response_model=list[AsistenciaPublic])
-def cargar_asistencia_curso_bulk_fecha(
+async def cargar_asistencia_curso_bulk_fecha(
     idCurso: int,
     payload: AsistenciaCursoFechaBulkRequest,
     session: SessionDep,
@@ -366,7 +373,7 @@ def cargar_asistencia_curso_bulk_fecha(
 ):
     overrides = [(o.idAlumno, o.estado, o.lluvia) for o in payload.overrides]
 
-    return upsert_asistencias_por_curso_fecha(
+    return await upsert_asistencias_por_curso_fecha(
         db=session,
         idCurso=idCurso,
         fecha=payload.fecha,
@@ -376,7 +383,7 @@ def cargar_asistencia_curso_bulk_fecha(
     )
 
 @router.post("/cursos/{idCurso}/bulk-rango")
-def cargar_asistencia_curso_bulk_rango(
+async def cargar_asistencia_curso_bulk_rango(
     idCurso: int,
     payload: AsistenciaCursoRangoBulkRequest,
     session: SessionDep,
@@ -384,7 +391,7 @@ def cargar_asistencia_curso_bulk_rango(
 ):
     overrides = [(o.idAlumno, o.estado, o.lluvia) for o in payload.overrides]
 
-    total = upsert_asistencias_por_curso_rango(
+    total = await upsert_asistencias_por_curso_rango(
         db=session,
         idCurso=idCurso,
         desde=payload.desde,
