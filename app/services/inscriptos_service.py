@@ -88,19 +88,35 @@ def _buscar_destino_cambio_curso(
 # =========================
 # PROMOCIONAR + registrar movimiento
 # =========================
+from datetime import date
+from fastapi import HTTPException
+from sqlalchemy import select
+
 def promocionar_alumnos(
     idCursoOrigen: int,
-    idCursoDestino: int,
+    idCursoDestino: int | None,   # ✅ ahora puede ser None
     alumnos,
     db: SessionDep,
     fecha: date | None = None,
     director_id: int | None = None,
 ) -> PromocionarOut:
     origen = _get_curso_or_404(db, idCursoOrigen)
-    destino = _get_curso_or_404(db, idCursoDestino)
 
-    if origen.cicloLectivo == destino.cicloLectivo:
-        raise HTTPException(status_code=400, detail="Curso destino debe ser de OTRO ciclo lectivo")
+    # ✅ Determinar si se necesita curso destino según las acciones
+    necesita_destino = any(
+        (item.accion in (AccionPromocion.Promociona, AccionPromocion.Repite))
+        for item in alumnos
+    )
+
+    if necesita_destino and not idCursoDestino:
+        raise HTTPException(status_code=422, detail="Falta idCursoDestino (requerido para Promociona/Repite)")
+
+    destino = None
+    if necesita_destino:
+        destino = _get_curso_or_404(db, int(idCursoDestino))
+
+        if origen.cicloLectivo == destino.cicloLectivo:
+            raise HTTPException(status_code=400, detail="Curso destino debe ser de OTRO ciclo lectivo")
 
     hoy = fecha or date.today()
     cue = str(origen.CUE)
@@ -113,7 +129,7 @@ def promocionar_alumnos(
             cue=cue,
             director_id=int(director_id),
             idCursoOrigen=int(idCursoOrigen),
-            idCursoDestino=int(idCursoDestino),
+            idCursoDestino=(int(idCursoDestino) if necesita_destino else None),  # ✅
             fecha=hoy,
             estado="Activo",
         )
@@ -123,14 +139,23 @@ def promocionar_alumnos(
         for item in alumnos:
             _get_alumno_or_404(db, item.idAlumno)
 
-            insc_origen = db.exec(
-                select(Inscriptos).where(
+            # ✅ traer SOLO lo que necesitamos (evita Row raro sin atributos)
+            row_insc_origen = db.exec(
+                select(
+                    Inscriptos.idInscripcion.label("idInscripcion")
+                ).where(
                     Inscriptos.idCurso == idCursoOrigen,
                     Inscriptos.idAlumno == item.idAlumno,
                     Inscriptos.activo == True,  # noqa: E712
                 )
             ).first()
-            id_insc_origen = int(insc_origen.idInscripcion) if insc_origen else None
+
+            id_insc_origen = int(row_insc_origen._mapping["idInscripcion"]) if row_insc_origen else None
+
+            # ✅ si además necesitás el objeto para cerrarlo, lo volvemos a buscar como modelo
+            insc_origen = None
+            if id_insc_origen is not None:
+                insc_origen = db.get(Inscriptos, id_insc_origen)
 
             if insc_origen:
                 if item.accion == AccionPromocion.Promociona:
@@ -148,11 +173,12 @@ def promocionar_alumnos(
             id_insc_destino = None
 
             if item.accion == AccionPromocion.Promociona:
+                # ✅ acá sí o sí hay destino
                 estado_dest = EstadoInscripcion.Activo
                 existente = db.exec(
                     select(Inscriptos)
                     .where(
-                        Inscriptos.idCurso == idCursoDestino,
+                        Inscriptos.idCurso == int(idCursoDestino),
                         Inscriptos.idAlumno == item.idAlumno,
                     )
                     .with_for_update()
@@ -167,7 +193,7 @@ def promocionar_alumnos(
                     id_insc_destino = int(existente.idInscripcion)
                 else:
                     nueva = Inscriptos(
-                        idCurso=idCursoDestino,
+                        idCurso=int(idCursoDestino),
                         idAlumno=item.idAlumno,
                         fechaAlta=hoy,
                         activo=True,
@@ -178,12 +204,13 @@ def promocionar_alumnos(
                     id_insc_destino = int(nueva.idInscripcion)
 
             elif item.accion == AccionPromocion.Repite:
+                # ✅ requiere destino (por el cicloLectivo del destino)
                 stmt_pre = (
                     select(Preinscripcion)
                     .where(
                         Preinscripcion.idAlumno == item.idAlumno,
                         Preinscripcion.CUE == cue,
-                        Preinscripcion.cicloLectivo == str(destino.cicloLectivo),
+                        Preinscripcion.cicloLectivo == str(destino.cicloLectivo),  # destino existe acá
                     )
                     .order_by(Preinscripcion.fechaCreacion.desc())
                     .limit(1)
@@ -205,12 +232,13 @@ def promocionar_alumnos(
 
                 id_insc_destino = None
 
+            # ✅ En items, idCursoDestino puede ser None (egreso/baja)
             it = MovimientoPromocionItem(
                 idMovimiento=int(mov.idMovimiento),
                 idAlumno=int(item.idAlumno),
                 accion=item.accion.value,
                 idCursoOrigen=int(idCursoOrigen),
-                idCursoDestino=int(idCursoDestino),
+                idCursoDestino=(int(idCursoDestino) if necesita_destino else None),
                 idInscripcionOrigen=id_insc_origen,
                 idInscripcionDestino=id_insc_destino,
             )
@@ -243,7 +271,7 @@ def listar_movimientos_por_cue(db: SessionDep, cue: str, limit: int = 20) -> lis
             CursoDestino.cicloLectivo.label("dest_ciclo")
         )
         .join(CursoOrigen, CursoOrigen.idCurso == MovimientoPromocion.idCursoOrigen)
-        .join(CursoDestino, CursoDestino.idCurso == MovimientoPromocion.idCursoDestino)
+        .outerjoin(CursoDestino, CursoDestino.idCurso == MovimientoPromocion.idCursoDestino)
         .where(MovimientoPromocion.cue == cue)
         .order_by(desc(MovimientoPromocion.created_at))
         .limit(limit)
@@ -260,7 +288,7 @@ def listar_movimientos_por_cue(db: SessionDep, cue: str, limit: int = 20) -> lis
             "estado": m.estado,
             "created_at": m.created_at,
             "cursoOrigen": f"{row.orig_nombre} {row.orig_div} ({row.orig_ciclo})",
-            "cursoDestino": f"{row.dest_nombre} {row.dest_div} ({row.dest_ciclo})",
+            "cursoDestino": f"{row.dest_nombre} {row.dest_div} ({row.dest_ciclo})" if row.dest_nombre else "Sin destino (egreso)",
             "idCursoOrigen": m.idCursoOrigen,
             "idCursoDestino": m.idCursoDestino,
             "director_id": m.director_id
@@ -285,14 +313,14 @@ def detalle_movimiento(db: SessionDep, idMovimiento: int) -> dict:
     results = db.exec(stmt).all()
 
     co = db.get(Curso, mov.idCursoOrigen)
-    cd = db.get(Curso, mov.idCursoDestino)
+    cd = db.get(Curso, mov.idCursoDestino) if mov.idCursoDestino else None
 
     return {
         "idMovimiento": mov.idMovimiento,
         "fecha": mov.fecha,
         "estado": mov.estado,
         "cursoOrigen": f"{co.nombre} {co.division}",
-        "cursoDestino": f"{cd.nombre} {cd.division}",
+        "cursoDestino": f"{cd.nombre} {cd.division}" if cd else "Sin destino (egreso)",
         "items": [
             {
                 "idItem": item.MovimientoPromocionItem.idItem,
@@ -438,28 +466,63 @@ def desinscribir_alumno(idCurso: int, idAlumno: int, db: SessionDep, fecha: date
 # Listar inscriptos por curso
 # =========================
 def get_inscriptos_by_curso(idCurso: int, db: SessionDep, solo_activos: bool = True):
-    _get_curso_or_404(db, idCurso)  # ← ya existe en inscriptos_service, acá usá get_one_curso
+    _get_curso_or_404(db, idCurso)
 
     stmt = (
-        select(Alumno)
-        .join(Inscriptos, Inscriptos.idAlumno == Alumno.idAlumno)
+        select(
+            Alumno.idAlumno.label("idAlumno"),
+            Alumno.nombre.label("nombre"),
+            Alumno.apellido.label("apellido"),
+            Alumno.dni.label("dni"),
+            getattr(Alumno, "fecha_nacimiento", None).label("fecha_nacimiento") if hasattr(Alumno, "fecha_nacimiento") else func.null().label("fecha_nacimiento"),
+            getattr(Alumno, "direccion", None).label("direccion") if hasattr(Alumno, "direccion") else func.null().label("direccion"),
+            # ✅ la key que tu response_model está pidiendo:
+            Inscriptos.fechaAlta.label("fecha_ingreso"),
+            # extras (no molestan, y sirven):
+            Inscriptos.idInscripcion.label("idInscripcion"),
+            Inscriptos.idCurso.label("idCurso"),
+            Inscriptos.activo.label("activo"),
+            Inscriptos.estado.label("estado"),
+            Inscriptos.fechaBaja.label("fechaBaja"),
+        )
+        .select_from(Inscriptos)
+        .join(Alumno, Alumno.idAlumno == Inscriptos.idAlumno)
         .where(Inscriptos.idCurso == idCurso)
     )
+
     if solo_activos:
-        stmt = stmt.where(Inscriptos.activo == True)
+        stmt = stmt.where(Inscriptos.activo == True)  # noqa: E712
 
-    alumnos = db.exec(stmt).all()
+    rows = db.exec(stmt).all()
 
-    # ✅ decrypt antes de devolver
-    for a in alumnos:
-        if a.dni:
-            a.dni = decrypt(a.dni)
-        if a.fecha_nacimiento:
-            a.fecha_nacimiento = decrypt(a.fecha_nacimiento)
-        if a.direccion:
-            a.direccion = decrypt(a.direccion)
+    out = []
+    for r in rows:
+        m = r._mapping
 
-    return alumnos
+        dni_raw = m.get("dni")
+        fn_raw = m.get("fecha_nacimiento")
+        dir_raw = m.get("direccion")
+
+        out.append({
+            "idAlumno": int(m["idAlumno"]),
+            "nombre": m.get("nombre"),
+            "apellido": m.get("apellido"),
+            "dni": decrypt(dni_raw) if dni_raw else None,
+            "fecha_nacimiento": decrypt(fn_raw) if fn_raw else None,
+            "direccion": decrypt(dir_raw) if dir_raw else None,
+
+            # ✅ requerido por tu response_model
+            "fecha_ingreso": m.get("fecha_ingreso"),
+
+            # extras
+            "idInscripcion": int(m["idInscripcion"]) if m.get("idInscripcion") is not None else None,
+            "idCurso": int(m["idCurso"]) if m.get("idCurso") is not None else None,
+            "activo": bool(m.get("activo")),
+            "estado": m.get("estado"),
+            "fechaBaja": m.get("fechaBaja"),
+        })
+
+    return out
 
 
 # =========================

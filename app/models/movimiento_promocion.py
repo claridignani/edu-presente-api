@@ -16,7 +16,7 @@ class MovimientoPromocion(SQLModel, table=True):
     director_id: int = Field(nullable=False)
 
     idCursoOrigen: int = Field(nullable=False)
-    idCursoDestino: int = Field(nullable=False)
+    idCursoDestino: Optional[int] = Field(default=None, nullable=True)
 
     fecha: date = Field(sa_column=Column(Date, nullable=False))
 
