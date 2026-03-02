@@ -314,7 +314,6 @@ def deshacer_movimiento(db: SessionDep, idMovimiento: int):
     mov = db.get(MovimientoPromocion, idMovimiento)
     if not mov:
         raise HTTPException(status_code=404, detail="Movimiento no encontrado")
-
     if mov.estado != "Activo":
         raise HTTPException(status_code=400, detail="Este movimiento ya fue deshecho o no está activo")
 
@@ -324,11 +323,26 @@ def deshacer_movimiento(db: SessionDep, idMovimiento: int):
 
     try:
         for it in items:
+            # ── Dar de baja inscripción destino del movimiento ──
             if it.idInscripcionDestino:
                 insc_dest = db.get(Inscriptos, it.idInscripcionDestino)
                 if insc_dest:
                     db.delete(insc_dest)
 
+            # ── FIX: dar de baja cualquier otra inscripción activa
+            # del alumno en el curso destino del movimiento
+            # (cubre asignaciones manuales del paso 4) ──
+            otras = db.exec(
+                select(Inscriptos).where(
+                    Inscriptos.idAlumno == it.idAlumno,
+                    Inscriptos.idCurso == mov.idCursoDestino,
+                    Inscriptos.activo == True,
+                )
+            ).all()
+            for otra in otras:
+                db.delete(otra)
+
+            # ── Reactivar inscripción origen ──
             if it.idInscripcionOrigen:
                 insc_org = db.get(Inscriptos, it.idInscripcionOrigen)
                 if insc_org:
@@ -345,7 +359,6 @@ def deshacer_movimiento(db: SessionDep, idMovimiento: int):
     except Exception:
         db.rollback()
         raise
-
 
 # =========================
 # Inscribir
@@ -425,7 +438,7 @@ def desinscribir_alumno(idCurso: int, idAlumno: int, db: SessionDep, fecha: date
 # Listar inscriptos por curso
 # =========================
 def get_inscriptos_by_curso(idCurso: int, db: SessionDep, solo_activos: bool = True):
-    _get_curso_or_404(db, idCurso)
+    _get_curso_or_404(db, idCurso)  # ← ya existe en inscriptos_service, acá usá get_one_curso
 
     stmt = (
         select(Alumno)
@@ -433,9 +446,20 @@ def get_inscriptos_by_curso(idCurso: int, db: SessionDep, solo_activos: bool = T
         .where(Inscriptos.idCurso == idCurso)
     )
     if solo_activos:
-        stmt = stmt.where(Inscriptos.activo == True)  # noqa: E712
+        stmt = stmt.where(Inscriptos.activo == True)
 
-    return db.exec(stmt).all()
+    alumnos = db.exec(stmt).all()
+
+    # ✅ decrypt antes de devolver
+    for a in alumnos:
+        if a.dni:
+            a.dni = decrypt(a.dni)
+        if a.fecha_nacimiento:
+            a.fecha_nacimiento = decrypt(a.fecha_nacimiento)
+        if a.direccion:
+            a.direccion = decrypt(a.direccion)
+
+    return alumnos
 
 
 # =========================
