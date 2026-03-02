@@ -2,7 +2,7 @@
 from datetime import date
 from typing import Annotated, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Depends
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Depends
 
 from app.dependencies import SessionDep
 from app.schemas.asistencia import AsistenciaCreate, AsistenciaPublic, AsistenciaRead  # ← agregar AsistenciaRead
@@ -54,14 +54,22 @@ def _to_read(r) -> AsistenciaRead:
 # ==========================
 
 @router.post("/", response_model=AsistenciaRead)
-async def create_or_update_asistencia(payload: AsistenciaCreate, session: SessionDep):
-    row = await upsert_asistencia(db=session, payload=payload)
+async def create_or_update_asistencia(
+    payload: AsistenciaCreate,
+    session: SessionDep,
+    background_tasks: BackgroundTasks,
+):
+    row = await upsert_asistencia(db=session, payload=payload, bg=background_tasks)
     return _to_read(row)
 
 
 @router.post("/bulk", response_model=list[AsistenciaRead])
-async def create_or_update_asistencias_bulk(payloads: list[AsistenciaCreate], session: SessionDep):
-    rows = await upsert_asistencias_bulk(db=session, payloads=payloads)
+async def create_or_update_asistencias_bulk(
+    payloads: list[AsistenciaCreate],
+    session: SessionDep,
+    background_tasks: BackgroundTasks,
+):
+    rows = await upsert_asistencias_bulk(db=session, payloads=payloads, bg=background_tasks)
     return [_to_read(r) for r in rows]
 
 
@@ -334,6 +342,7 @@ async def cargar_asistencia_curso_bulk_fecha(
     idCurso: int,
     payload: AsistenciaCursoFechaBulkRequest,
     session: SessionDep,
+    background_tasks: BackgroundTasks,
     current_user: Usuario = Depends(get_current_user),
 ):
     overrides = [(o.idAlumno, o.estado, o.lluvia) for o in payload.overrides]
@@ -345,6 +354,7 @@ async def cargar_asistencia_curso_bulk_fecha(
         default_estado=payload.default_estado,
         lluvia=payload.lluvia,
         overrides=overrides,
+        bg=background_tasks,
     )
 
 
@@ -353,6 +363,7 @@ async def cargar_asistencia_curso_bulk_rango(
     idCurso: int,
     payload: AsistenciaCursoRangoBulkRequest,
     session: SessionDep,
+    background_tasks: BackgroundTasks,
     current_user: Usuario = Depends(get_current_user),
 ):
     overrides = [(o.idAlumno, o.estado, o.lluvia) for o in payload.overrides]
@@ -367,5 +378,6 @@ async def cargar_asistencia_curso_bulk_rango(
         lluvia=payload.lluvia,
         overrides=overrides,
         solo_alumnos=payload.solo_alumnos,
+        bg=background_tasks,
     )
     return {"ok": True, "registros": total}
