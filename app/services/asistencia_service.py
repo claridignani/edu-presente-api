@@ -24,6 +24,7 @@ from app.services.whatsapp_service import enviar_plantilla_inasistencia
 from collections import defaultdict
 from app.models.inscriptos import Inscriptos
 from app.models.responsable import Responsable
+from app.models.parentesco import Parentesco
 
 
 # ==========================
@@ -41,7 +42,7 @@ def ensure_curso_exists(db: SessionDep, idCurso: int):
     return curso
 
 
-def ensure_alumno_exists(db: SessionDep, idAlumno: int):
+def ensure_alumno_exists(db: SessionDep, idAlumno: int) -> Alumno:
     alumno = db.get(Alumno, idAlumno)
     if alumno is None:
         raise HTTPException(status_code=404, detail="El alumno ingresado no existe")
@@ -64,31 +65,45 @@ def ensure_alumnos_exist(db: SessionDep, ids_alumnos: Iterable[int]):
 # Create / Upsert (uno)
 # ==========================
 
-async def _enviar_whatsapp_a_responsables(alumno: Alumno, db: SessionDep) -> str | None:
-    """Envía notificación WhatsApp a TODOS los responsables con teléfono.
-    Retorna el wamid del último mensaje enviado (para vincular respuesta).
+async def _enviar_whatsapp_al_responsable_principal(
+    idAlumno: int,
+    apellido: str,
+    nombre: str,
+    dni_encrypted: str | None,
+    db: SessionDep,
+) -> str | None:
+    """Busca explícitamente (sin lazy load) el primer responsable con teléfono
+    del alumno y le envía el WhatsApp de inasistencia.
+    Retorna el wamid si fue exitoso, o None.
     """
-    ultimo_wamid = None
-    if not alumno or not alumno.responsables:
+    # Consulta directa: evita problemas de lazy load tras db.commit()
+    stmt = (
+        select(Responsable)
+        .join(Parentesco, Parentesco.idResponsable == Responsable.idResponsable)
+        .where(
+            Parentesco.idAlumno == idAlumno,
+            Responsable.nro_celular != "",
+        )
+        .limit(1)
+    )
+    responsable = db.exec(stmt).first()
+
+    if not responsable:
+        print(f"Sin responsable con teléfono para alumno {idAlumno} ({apellido}, {nombre})")
         return None
 
-    dni_plain = decrypt(alumno.dni) if alumno.dni else ""
-
-    for responsable in alumno.responsables:
-        if not responsable.nro_celular:
-            continue
-        try:
-            wamid = await enviar_plantilla_inasistencia(
-                telefono=responsable.nro_celular,
-                apellido=alumno.apellido,
-                nombre=alumno.nombre,
-                dni=dni_plain,
-            )
-            ultimo_wamid = wamid
-        except Exception as e:
-            print(f"Error enviando WhatsApp al responsable {responsable.nombre} de {alumno.nombre}: {e}")
-
-    return ultimo_wamid
+    dni_plain = decrypt(dni_encrypted) if dni_encrypted else ""
+    try:
+        wamid = await enviar_plantilla_inasistencia(
+            telefono=responsable.nro_celular,
+            apellido=apellido,
+            nombre=nombre,
+            dni=dni_plain,
+        )
+        return wamid
+    except Exception as e:
+        print(f"Error enviando WhatsApp al responsable {responsable.idResponsable} de {apellido}: {e}")
+        return None
 
 
 async def upsert_asistencia(db: SessionDep, payload: AsistenciaCreate) -> Asistencia:
@@ -97,11 +112,16 @@ async def upsert_asistencia(db: SessionDep, payload: AsistenciaCreate) -> Asiste
     (idCurso, idAlumno, fecha)
     """
     ensure_curso_exists(db, payload.idCurso)
-    ensure_alumno_exists(db, payload.idAlumno)
+    alumno = ensure_alumno_exists(db, payload.idAlumno)
 
     if payload.estado == "Ausente":
-        alumno = db.get(Alumno, payload.idAlumno)
-        wamid_generado = await _enviar_whatsapp_a_responsables(alumno, db)
+        wamid_generado = await _enviar_whatsapp_al_responsable_principal(
+            idAlumno=payload.idAlumno,
+            apellido=alumno.apellido,
+            nombre=alumno.nombre,
+            dni_encrypted=alumno.dni,
+            db=db,
+        )
         if wamid_generado:
             payload.wamid = wamid_generado
 
@@ -176,18 +196,32 @@ async def upsert_asistencias_bulk(db: SessionDep, payloads: list[AsistenciaCreat
         db=db, idCurso=any_row.idCurso, fecha=any_row.fecha, umbral=3
     )
 
-    # Fix 3: Enviar WhatsApp a responsables de alumnos ausentes
-    ausentes_ids = list({p.idAlumno for p in payloads if p.estado == "Ausente"})
-    for idAlumno in ausentes_ids:
-        alumno = db.get(Alumno, idAlumno)
-        wamid = await _enviar_whatsapp_a_responsables(alumno, db)
-        if wamid:
-            # Actualizar wamid en el registro de asistencia
-            for row in out:
-                if row.idAlumno == idAlumno and row.estado == "Ausente":
-                    row.wamid = wamid
-                    db.add(row)
-            db.commit()
+    # Enviar WhatsApp al primer responsable con teléfono de cada alumno ausente
+    ausentes_payloads = {p.idAlumno: p for p in payloads if p.estado == "Ausente"}
+    if ausentes_payloads:
+        # Refrescar los rows ausentes para tener datos actualizados
+        ausentes_rows = {row.idAlumno: row for row in out if row.idAlumno in ausentes_payloads}
+
+        # Cargar datos de los alumnos ausentes en un solo query
+        stmt_alumnos = select(Alumno).where(Alumno.idAlumno.in_(list(ausentes_payloads.keys())))
+        alumnos_map = {a.idAlumno: a for a in db.exec(stmt_alumnos).all()}
+
+        for idAlumno, row in ausentes_rows.items():
+            alumno = alumnos_map.get(idAlumno)
+            if not alumno:
+                continue
+            wamid = await _enviar_whatsapp_al_responsable_principal(
+                idAlumno=idAlumno,
+                apellido=alumno.apellido,
+                nombre=alumno.nombre,
+                dni_encrypted=alumno.dni,
+                db=db,
+            )
+            if wamid:
+                row.wamid = wamid
+                db.add(row)
+
+        db.commit()
 
     return out
 
