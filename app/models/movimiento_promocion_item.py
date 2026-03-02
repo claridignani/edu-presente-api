@@ -9,13 +9,16 @@ class MovimientoPromocionItem(SQLModel, table=True):
 
     idItem: Optional[int] = Field(default=None, primary_key=True)
 
-    idMovimiento: int = Field(foreign_key="movimiento_promocion.idMovimiento", nullable=False)
+    idMovimiento: int = Field(
+        foreign_key="movimiento_promocion.idMovimiento",
+        nullable=False
+    )
 
     idAlumno: int = Field(nullable=False)
     accion: str = Field(max_length=20, nullable=False)
 
     idCursoOrigen: int = Field(nullable=False)
-    idCursoDestino: int = Field(nullable=False)
+    idCursoDestino: Optional[int] = Field(default=None, nullable=True)  # ✅
 
     idInscripcionOrigen: Optional[int] = Field(default=None, nullable=True)
     idInscripcionDestino: Optional[int] = Field(default=None, nullable=True)
