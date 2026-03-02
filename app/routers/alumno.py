@@ -12,7 +12,7 @@ from app.schemas.alumnos_historial import AlumnoCicloPage
 from app.schemas.alumno_masivo import AlumnoMasivoRequest, AlumnoMasivoResponse, AlumnoMasivoItemResult
 from app.services.responsable_service import add_responsable, get_responsable_by_dni
 from app.services.parentesco_service import upsert_parentesco, get_responsables_by_alumno
-
+from app.core.encryption import decrypt
 from app.services.alumno_service import (
     get_all_alumnos,
     get_alumnos_by_curso,
@@ -153,6 +153,8 @@ def alta_masiva_alumnos_en_curso(
     session: SessionDep,
     current_user: Usuario = Depends(get_current_user),
 ):
+    from app.core.encryption import decrypt  # ✅ para devolver legible en el response
+
     results: list[AlumnoMasivoItemResult] = []
     ok_count = 0
     failed_count = 0
@@ -191,8 +193,9 @@ def alta_masiva_alumnos_en_curso(
                     message="Creado/actualizado OK",
                     idAlumno=int(db_alumno.idAlumno),
                     idResponsable=int(db_resp.idResponsable),
-                    alumnoDni=str(db_alumno.dni),
-                    responsableDni=str(db_resp.dni),
+                    # ✅ devolver desencriptado (en DB está encriptado)
+                    alumnoDni=decrypt(db_alumno.dni) if db_alumno.dni else None,
+                    responsableDni=decrypt(db_resp.dni) if db_resp.dni else None,
                 )
             )
 
@@ -204,10 +207,13 @@ def alta_masiva_alumnos_en_curso(
                     index=i,
                     ok=False,
                     message=f"{e.detail}",
-                    alumnoDni=getattr(item.alumno, "dni", None),
-                    responsableDni=getattr(item.responsable, "dni", None),
+                    # item.alumno.dni viene encriptado por AlumnoCreate → lo mostramos legible
+                    alumnoDni=decrypt(getattr(item.alumno, "dni", None)),
+                    # item.responsable.dni viene encriptado por ResponsableCreate → lo mostramos legible
+                    responsableDni=decrypt(getattr(item.responsable, "dni", None)),
                 )
             )
+
         except Exception as e:
             session.rollback()
             failed_count += 1
@@ -216,8 +222,8 @@ def alta_masiva_alumnos_en_curso(
                     index=i,
                     ok=False,
                     message=f"Error inesperado: {str(e)}",
-                    alumnoDni=getattr(item.alumno, "dni", None),
-                    responsableDni=getattr(item.responsable, "dni", None),
+                    alumnoDni=decrypt(getattr(item.alumno, "dni", None)),
+                    responsableDni=decrypt(getattr(item.responsable, "dni", None)),
                 )
             )
 

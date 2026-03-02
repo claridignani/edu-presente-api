@@ -292,6 +292,7 @@ def get_alumnos_detalle_por_escuela(
 # ==============================================================
 
 def get_alumno_detalle_por_id(db: SessionDep, idAlumno: int) -> AlumnoEscuelaDetallePublic:
+    # Elegir un responsable "principal" (el de menor idResponsable) SOLO para este alumno
     sub_resp = (
         select(
             Parentesco.idAlumno.label("idAlumno"),
@@ -315,7 +316,11 @@ def get_alumno_detalle_por_id(db: SessionDep, idAlumno: int) -> AlumnoEscuelaDet
                 Parentesco.idResponsable == sub_resp.c.idResponsable,
             ),
         )
-        .where(Inscriptos.activo == True)
+        # ✅ ESTE ERA EL BUG: faltaba filtrar por el idAlumno del path
+        .where(Alumno.idAlumno == idAlumno)
+        # solo inscripción activa
+        .where(Inscriptos.activo == True)  # noqa: E712
+        # si tiene varias inscripciones activas (raro), tomamos la más nueva
         .order_by(desc(Inscriptos.fechaAlta), desc(Inscriptos.idInscripcion))
         .limit(1)
     )
