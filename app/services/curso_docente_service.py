@@ -49,6 +49,8 @@ def asignar_docente_a_curso(
         existente.tipo = payload.tipo
         existente.fechaDesde = payload.fechaDesde
         existente.fechaHasta = payload.fechaHasta
+        existente.estado = "Activo"  # ✅ reactivar si estaba Inactivo
+        existente.fechaHasta = None  # ✅ limpiar la fecha de baja que puso inactivar
         db.add(existente)
         db.commit()
         db.refresh(existente)
