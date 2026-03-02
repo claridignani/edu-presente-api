@@ -60,21 +60,12 @@ class UsuarioBase(SQLModel):
     nombre: str = Field(max_length=100)
     apellido: str = Field(max_length=100)
 
-    @field_validator("dni", mode="before")
-    @classmethod
-    def validar_dni(cls, v):
-        v = _only_digits(v)
-        if not isinstance(v, str) or not DNI_RE.match(v):
-            raise ValueError("El DNI debe tener 7 u 8 dígitos y solo números")
-        return v
-
-    @field_validator("cuil", mode="before")
-    @classmethod
-    def validar_cuil(cls, v):
-        v = _only_digits(v)
-        if not isinstance(v, str) or not CUIL_RE.match(v):
-            raise ValueError("El CUIL debe tener 11 dígitos y solo números")
-        return v
+    # ✅ ELIMINADOS validar_dni y validar_cuil de aquí.
+    # El problema era que UsuarioCreate encripta dni/cuil en sus propios
+    # field_validators (mode="before"), pero luego los validators heredados
+    # de UsuarioBase corrían sobre el valor YA encriptado ("gAAAAAB..."),
+    # fallando la regex. Cada subclase que necesite validar dni/cuil
+    # lo hace en sus propios validators.
 
     @field_validator("celular", mode="before")
     @classmethod
@@ -156,6 +147,8 @@ class UsuarioCreate(UsuarioBase):
     escuelasCUE: List[str]
     codigoInvitacion: Optional[str] = None
 
+    # ✅ Valida el valor plano recibido del frontend, luego encripta.
+    #    No hereda validar_dni de UsuarioBase (fue eliminado allá).
     @field_validator("dni", mode="before")
     @classmethod
     def validar_y_encrypt_dni(cls, v):
@@ -164,6 +157,7 @@ class UsuarioCreate(UsuarioBase):
             raise ValueError("El DNI debe tener 7 u 8 dígitos y solo números")
         return encrypt(v)
 
+    # ✅ Ídem para cuil.
     @field_validator("cuil", mode="before")
     @classmethod
     def validar_y_encrypt_cuil(cls, v):
