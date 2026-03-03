@@ -23,7 +23,8 @@ from app.routers.preinscripcion import router as preinscripcion_router
 from app.routers.escuela_public import router as escuela_public_router
 from app.routers.invitacion_public import router as invitacion_public_router
 from app.routers.usuario_public import router as usuario_public_router
-
+from dotenv import load_dotenv
+load_dotenv()
 import logging
 
 logging.basicConfig(

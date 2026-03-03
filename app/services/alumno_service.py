@@ -292,7 +292,11 @@ def get_alumnos_detalle_por_escuela(
 # ==============================================================
 
 def get_alumno_detalle_por_id(db: SessionDep, idAlumno: int) -> AlumnoEscuelaDetallePublic:
-    # Elegir un responsable "principal" (el de menor idResponsable) SOLO para este alumno
+    # Primero verificar que el alumno existe
+    alumno = db.get(Alumno, idAlumno)
+    if not alumno:
+        raise HTTPException(status_code=404, detail="Alumno no encontrado")
+
     sub_resp = (
         select(
             Parentesco.idAlumno.label("idAlumno"),
@@ -305,8 +309,10 @@ def get_alumno_detalle_por_id(db: SessionDep, idAlumno: int) -> AlumnoEscuelaDet
 
     stmt = (
         select(Alumno, Curso, Responsable, Parentesco.parentesco)
-        .join(Inscriptos, Inscriptos.idAlumno == Alumno.idAlumno)
-        .join(Curso, Curso.idCurso == Inscriptos.idCurso)
+        .where(Alumno.idAlumno == idAlumno)
+        # ← outerjoin para que funcione aunque no tenga inscripción
+        .outerjoin(Inscriptos, and_(Inscriptos.idAlumno == Alumno.idAlumno, Inscriptos.activo == True))
+        .outerjoin(Curso, Curso.idCurso == Inscriptos.idCurso)
         .outerjoin(sub_resp, sub_resp.c.idAlumno == Alumno.idAlumno)
         .outerjoin(Responsable, Responsable.idResponsable == sub_resp.c.idResponsable)
         .outerjoin(
@@ -316,18 +322,13 @@ def get_alumno_detalle_por_id(db: SessionDep, idAlumno: int) -> AlumnoEscuelaDet
                 Parentesco.idResponsable == sub_resp.c.idResponsable,
             ),
         )
-        # ✅ ESTE ERA EL BUG: faltaba filtrar por el idAlumno del path
-        .where(Alumno.idAlumno == idAlumno)
-        # solo inscripción activa
-        .where(Inscriptos.activo == True)  # noqa: E712
-        # si tiene varias inscripciones activas (raro), tomamos la más nueva
         .order_by(desc(Inscriptos.fechaAlta), desc(Inscriptos.idInscripcion))
         .limit(1)
     )
 
     row = db.exec(stmt).first()
     if not row:
-        raise HTTPException(status_code=404, detail="Alumno no encontrado o no inscripto a un curso")
+        raise HTTPException(status_code=404, detail="Alumno no encontrado")
 
     alumno, curso, resp, parentesco = row
 
@@ -350,8 +351,9 @@ def get_alumno_detalle_por_id(db: SessionDep, idAlumno: int) -> AlumnoEscuelaDet
         dni=decrypt(alumno.dni) if alumno.dni else alumno.dni,
         estado=getattr(alumno, "estado", "Activo") or "Activo",
         direccion=decrypt(alumno.direccion) if getattr(alumno, "direccion", None) else None,
-        idCurso=curso.idCurso,
-        nombreCurso=f"{curso.nombre} {curso.division}".strip(),
+        # ← None si no tiene curso (egresado)
+        idCurso=curso.idCurso if curso else None,
+        nombreCurso=f"{curso.nombre} {curso.division}".strip() if curso else None,
         responsable=responsable_public,
     )
 
