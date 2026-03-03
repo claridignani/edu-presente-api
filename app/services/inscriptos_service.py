@@ -15,7 +15,6 @@ from app.schemas.inscriptos import EstadoInscripcion, AccionPromocion, Inscripci
 from app.schemas.movimientos import PromocionarOut
 from app.models.preinscripcion import Preinscripcion
 from app.services.curso_service import get_one_curso
-# ✅ FIX: importar decrypt (ya estaba en alumno_service, faltaba aquí)
 from app.core.encryption import decrypt
 
 
@@ -88,10 +87,6 @@ def _buscar_destino_cambio_curso(
 # =========================
 # PROMOCIONAR + registrar movimiento
 # =========================
-from datetime import date
-from fastapi import HTTPException
-from sqlalchemy import select
-
 def promocionar_alumnos(
     idCursoOrigen: int,
     idCursoDestino: int | None,   # ✅ ahora puede ser None
