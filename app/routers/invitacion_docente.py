@@ -21,6 +21,7 @@ def generar_invitacion_docente(payload: InvitacionDocenteCreate, session: Sessio
         director_id=payload.director_id,
         idCurso=payload.idCurso,
         tipo=payload.tipo,
+        idUsuario=payload.idUsuario,
         fechaDesde=payload.fechaDesde,
         fechaHasta=payload.fechaHasta,
     )

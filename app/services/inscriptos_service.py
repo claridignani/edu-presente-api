@@ -89,7 +89,7 @@ def _buscar_destino_cambio_curso(
 # =========================
 def promocionar_alumnos(
     idCursoOrigen: int,
-    idCursoDestino: int | None,   # ✅ ahora puede ser None
+    idCursoDestino: int | None,
     alumnos,
     db: SessionDep,
     fecha: date | None = None,
@@ -97,7 +97,6 @@ def promocionar_alumnos(
 ) -> PromocionarOut:
     origen = _get_curso_or_404(db, idCursoOrigen)
 
-    # ✅ Determinar si se necesita curso destino según las acciones
     necesita_destino = any(
         (item.accion in (AccionPromocion.Promociona, AccionPromocion.Repite))
         for item in alumnos
@@ -109,7 +108,6 @@ def promocionar_alumnos(
     destino = None
     if necesita_destino:
         destino = _get_curso_or_404(db, int(idCursoDestino))
-
         if origen.cicloLectivo == destino.cicloLectivo:
             raise HTTPException(status_code=400, detail="Curso destino debe ser de OTRO ciclo lectivo")
 
@@ -124,7 +122,7 @@ def promocionar_alumnos(
             cue=cue,
             director_id=int(director_id),
             idCursoOrigen=int(idCursoOrigen),
-            idCursoDestino=(int(idCursoDestino) if necesita_destino else None),  # ✅
+            idCursoDestino=(int(idCursoDestino) if necesita_destino else None),
             fecha=hoy,
             estado="Activo",
         )
@@ -134,23 +132,16 @@ def promocionar_alumnos(
         for item in alumnos:
             _get_alumno_or_404(db, item.idAlumno)
 
-            # ✅ traer SOLO lo que necesitamos (evita Row raro sin atributos)
-            row_insc_origen = db.exec(
-                select(
-                    Inscriptos.idInscripcion.label("idInscripcion")
-                ).where(
+            # ✅ traemos el objeto directamente, sin doble búsqueda
+            insc_origen = db.exec(
+                select(Inscriptos).where(
                     Inscriptos.idCurso == idCursoOrigen,
                     Inscriptos.idAlumno == item.idAlumno,
-                    Inscriptos.activo == True,  # noqa: E712
+                    Inscriptos.activo == True,
                 )
             ).first()
 
-            id_insc_origen = int(row_insc_origen._mapping["idInscripcion"]) if row_insc_origen else None
-
-            # ✅ si además necesitás el objeto para cerrarlo, lo volvemos a buscar como modelo
-            insc_origen = None
-            if id_insc_origen is not None:
-                insc_origen = db.get(Inscriptos, id_insc_origen)
+            id_insc_origen = int(insc_origen.idInscripcion) if insc_origen else None
 
             if insc_origen:
                 if item.accion == AccionPromocion.Promociona:
@@ -168,7 +159,6 @@ def promocionar_alumnos(
             id_insc_destino = None
 
             if item.accion == AccionPromocion.Promociona:
-                # ✅ acá sí o sí hay destino
                 estado_dest = EstadoInscripcion.Activo
                 existente = db.exec(
                     select(Inscriptos)
@@ -199,13 +189,12 @@ def promocionar_alumnos(
                     id_insc_destino = int(nueva.idInscripcion)
 
             elif item.accion == AccionPromocion.Repite:
-                # ✅ requiere destino (por el cicloLectivo del destino)
                 stmt_pre = (
                     select(Preinscripcion)
                     .where(
                         Preinscripcion.idAlumno == item.idAlumno,
                         Preinscripcion.CUE == cue,
-                        Preinscripcion.cicloLectivo == str(destino.cicloLectivo),  # destino existe acá
+                        Preinscripcion.cicloLectivo == str(destino.cicloLectivo),
                     )
                     .order_by(Preinscripcion.fechaCreacion.desc())
                     .limit(1)
@@ -224,17 +213,15 @@ def promocionar_alumnos(
                             estado="Pendiente",
                         )
                     )
-
                 id_insc_destino = None
 
-            # ✅ En items, idCursoDestino puede ser None (egreso/baja)
             it = MovimientoPromocionItem(
                 idMovimiento=int(mov.idMovimiento),
                 idAlumno=int(item.idAlumno),
                 accion=item.accion.value,
                 idCursoOrigen=int(idCursoOrigen),
                 idCursoDestino=(int(idCursoDestino) if necesita_destino else None),
-                idInscripcionOrigen=id_insc_origen,
+                idInscripcionOrigen=id_insc_origen,  # ✅ ahora es int o None
                 idInscripcionDestino=id_insc_destino,
             )
             db.add(it)

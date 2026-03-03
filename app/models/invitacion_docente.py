@@ -10,8 +10,10 @@ class InvitacionDocente(SQLModel, table=True):
     CUE: str = Field(foreign_key="escuela.CUE", index=True)
     idCurso: int = Field(foreign_key="curso.idCurso", index=True)
 
-    # "Titular" | "Suplente"
     tipo: str = Field(default="Suplente", max_length=20)
+
+    # ── docente específico (opcional) ──────────────────────
+    idUsuario: int | None = Field(default=None, foreign_key="usuario.idUsuario", nullable=True)
 
     fechaDesde: date_only | None = None
     fechaHasta: date_only | None = None
