@@ -136,7 +136,10 @@ def asignar_docente_a_curso(
 
 
 def listar_docentes_de_curso(db: SessionDep, idCurso: int):
-    stmt = select(CursoDocente).where(CursoDocente.idCurso == idCurso)
+    stmt = select(CursoDocente).where(
+        CursoDocente.idCurso == idCurso,
+        CursoDocente.estado == "Activo",  
+    )
     return db.exec(stmt).all()
 
 def inactivar_docente_de_curso(db: SessionDep, idCurso: int, idUsuario: int):
