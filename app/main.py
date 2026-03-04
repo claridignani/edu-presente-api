@@ -23,6 +23,9 @@ from app.routers.preinscripcion import router as preinscripcion_router
 from app.routers.escuela_public import router as escuela_public_router
 from app.routers.invitacion_public import router as invitacion_public_router
 from app.routers.usuario_public import router as usuario_public_router
+from app.routers import requisitos
+
+
 from dotenv import load_dotenv
 load_dotenv()
 import logging
@@ -74,3 +77,4 @@ app.include_router(invitacion_docente.router, dependencies=auth_dep)
 app.include_router(inscriptos_admin_router, dependencies=auth_dep)
 app.include_router(alertas_router, dependencies=auth_dep)
 app.include_router(ia_router, dependencies=auth_dep)
+app.include_router(requisitos.router, dependencies=auth_dep)

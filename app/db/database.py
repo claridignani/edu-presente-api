@@ -25,5 +25,6 @@ def create_db_and_tables():
         import app.models.movimiento_promocion_item
         import app.models.alerta
         import app.models.intervencion
+        import app.models.requisito
 
         SQLModel.metadata.create_all(engine)
