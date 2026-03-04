@@ -149,17 +149,20 @@ def get_all_alumnos(db: SessionDep, offset: int, limit: Annotated[int, Query(le=
 # GET BY CURSO (INSCRIPTOS)
 # ==============================================================
 
-def get_alumnos_detalle_by_curso(idCurso: int, db: SessionDep):
+def get_alumnos_detalle_by_curso(idCurso: int, db: SessionDep, solo_activos: bool = True):
     stmt = (
         select(Alumno, Responsable, Parentesco.parentesco)
         .join(Inscriptos, Inscriptos.idAlumno == Alumno.idAlumno)
         .outerjoin(Parentesco, Parentesco.idAlumno == Alumno.idAlumno)
         .outerjoin(Responsable, Responsable.idResponsable == Parentesco.idResponsable)
         .where(Inscriptos.idCurso == idCurso)
-        .where(Inscriptos.activo == True)
     )
 
+    if solo_activos:
+        stmt = stmt.where(Inscriptos.activo == True)  
+
     rows = db.exec(stmt).all()
+
     alumnos_map = {}
 
     for alumno, responsable, parentesco in rows:

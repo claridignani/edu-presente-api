@@ -40,9 +40,9 @@ def getAllAlumnos(
     return get_all_alumnos(db=session, offset=offset, limit=limit)
 
 
-@router.get("/cursos/{idCurso}/detalle", response_model=list[AlumnoDetallePublic])
-def getAlumnosDetalleByCurso(idCurso: int, session: SessionDep):
-    return get_alumnos_detalle_by_curso(idCurso=idCurso, db=session)
+@router.get("/cursos/{idCurso}/detalle")
+def get_detalle(idCurso: int, session: SessionDep, solo_activos: bool = True):
+    return get_alumnos_detalle_by_curso(idCurso=idCurso, db=session, solo_activos=solo_activos)
 
 
 @router.get("/escuela/{cue}/detalle", response_model=list[AlumnoEscuelaDetallePublic])
