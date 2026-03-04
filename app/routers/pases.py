@@ -26,6 +26,8 @@ from app.services.pases_service import (
     get_comprobante,
     listar_entradas,
     listar_salidas,
+    listar_salidas_por_alumno,   
+    listar_entradas_por_alumno,
 )
 
 router = APIRouter(prefix="/pases", tags=["Pases"])
@@ -57,6 +59,14 @@ def crear_pases_salida_bulk_endpoint(
     current_user: Usuario = Depends(get_current_user),
 ):
     return crear_pases_salida_bulk(db=session, payload=payload)
+
+@router.get("/salida/alumno/{id_alumno}", response_model=list[PaseSalidaListItem])
+def listar_salidas_alumno_endpoint(
+    id_alumno: int,
+    session: SessionDep,
+    current_user: Usuario = Depends(get_current_user),
+):
+    return listar_salidas_por_alumno(db=session, id_alumno=id_alumno)
 
 
 # ──────────────────────────────────────────
@@ -142,6 +152,14 @@ def listar_entradas_endpoint(
 ):
     return listar_entradas(db=session, cue=cue, limit=limit, offset=offset)
 
+@router.get("/entrada/alumno/{id_alumno}", response_model=list[PaseEntradaListItem])
+def listar_entradas_alumno_endpoint(
+    id_alumno: int,
+    session: SessionDep,
+    current_user: Usuario = Depends(get_current_user),
+):
+    return listar_entradas_por_alumno(db=session, id_alumno=id_alumno)
+
 
 # ──────────────────────────────────────────
 # Búsqueda de escuelas — parcial por nombre o CUE
@@ -157,3 +175,4 @@ def buscar_escuelas_endpoint(
     current_user: Usuario = Depends(get_current_user),
 ):
     return buscar_escuelas(db=session, q=q, limit=limit)
+

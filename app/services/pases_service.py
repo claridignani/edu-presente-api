@@ -104,6 +104,24 @@ def _reactivar_inscripcion(db: Session, idInscripcion: int) -> None:
         inscripcion.estado = EstadoInscripcion.Activo
         db.add(inscripcion)
 
+def _dar_baja_inscripcion_activa_por_alumno(db: Session, idAlumno: int) -> None:
+    """
+    Busca la inscripción activa del alumno y la da de baja.
+    Se usa como fallback cuando el payload no trae idInscripcion.
+    """
+    inscripcion = db.exec(
+        select(Inscriptos)
+        .where(Inscriptos.idAlumno == idAlumno)
+        .where(Inscriptos.activo == True)
+        .order_by(Inscriptos.idInscripcion.desc())
+        .limit(1)
+    ).first()
+
+    if inscripcion:
+        inscripcion.activo = False
+        inscripcion.fechaBaja = date.today()
+        inscripcion.estado = EstadoInscripcion.Baja
+        db.add(inscripcion)
 
 # ──────────────────────────────────────────
 # Pase Salida — individual
@@ -143,6 +161,10 @@ def crear_pase_salida(db: Session, payload: PaseSalidaCreate) -> PaseSalidaPubli
 
     if payload.idInscripcion:
         _dar_baja_inscripcion(db, payload.idInscripcion)
+    else:
+        # fallback: busca y da de baja la inscripción activa del alumno
+        _dar_baja_inscripcion_activa_por_alumno(db, payload.idAlumno)
+
 
     db.commit()
     db.refresh(pase)
@@ -192,6 +214,8 @@ def crear_pases_salida_bulk(
 
         if item.idInscripcion:
             _dar_baja_inscripcion(db, item.idInscripcion)
+        else:
+            _dar_baja_inscripcion_activa_por_alumno(db, item.idAlumno)
 
         db.flush()  # obtener idPase sin hacer commit todavía
         resultados.append(_build_pase_public(pase, alumno))
@@ -400,3 +424,75 @@ def buscar_escuelas(db: Session, q: str, limit: int = 10) -> list[Escuela]:
         .where(Escuela.nombre.ilike(term) | Escuela.CUE.ilike(term))
         .limit(limit)
     ).all()
+
+def listar_salidas_por_alumno(
+    db: Session,
+    id_alumno: int,
+) -> list[PaseSalidaListItem]:
+    pases = db.exec(
+        select(PaseSalida)
+        .where(PaseSalida.idAlumno == id_alumno)
+        .order_by(PaseSalida.fecha.desc())
+    ).all()
+
+    resultado: list[PaseSalidaListItem] = []
+    for p in pases:
+        alumno = db.get(Alumno, p.idAlumno)
+        if not alumno:
+            continue
+
+        destino: str | None = None
+        if p.cueDestino and p.nombreEscuelaDestino:
+            destino = f"{p.cueDestino} - {p.nombreEscuelaDestino}"
+        elif p.nombreEscuelaDestino:
+            destino = p.nombreEscuelaDestino
+
+        resultado.append(
+            PaseSalidaListItem(
+                idPase=p.idPase,
+                nroPase=p.nroPase,
+                dni=decrypt(alumno.dni),
+                apellidoNombre=f"{alumno.apellido}, {alumno.nombre}",
+                fechaPase=p.fecha,
+                tipoPase=TipoPase(p.tipoPase),
+                motivo=p.motivo,
+                establecimientoDestino=destino,
+                estado=EstadoPase(p.estado),
+            )
+        )
+    return resultado
+
+
+def listar_entradas_por_alumno(
+    db: Session,
+    id_alumno: int,
+) -> list[PaseEntradaListItem]:
+    pases = db.exec(
+        select(PaseEntrada)
+        .where(PaseEntrada.idAlumno == id_alumno)
+        .order_by(PaseEntrada.fecha.desc())
+    ).all()
+
+    resultado: list[PaseEntradaListItem] = []
+    for p in pases:
+        alumno = db.get(Alumno, p.idAlumno)
+        if not alumno:
+            continue
+
+        escuela_origen: str | None = None
+        if p.cueOrigen and p.nombreEscuelaOrigen:
+            escuela_origen = f"{p.cueOrigen} - {p.nombreEscuelaOrigen}"
+        elif p.nombreEscuelaOrigen:
+            escuela_origen = p.nombreEscuelaOrigen
+
+        resultado.append(
+            PaseEntradaListItem(
+                idPaseEntrada=p.idPaseEntrada,
+                dni=decrypt(alumno.dni),
+                apellidoNombre=f"{alumno.apellido}, {alumno.nombre}",
+                fechaPase=p.fecha,
+                escuelaOrigen=escuela_origen or "Sin pase",
+                estado=EstadoPaseEntrada(p.estado),
+            )
+        )
+    return resultado
