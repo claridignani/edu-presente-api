@@ -332,35 +332,48 @@ def deshacer_movimiento(db: SessionDep, idMovimiento: int):
     ).all()
 
     try:
-        for it in items:
-            # ── Dar de baja inscripción destino del movimiento ──
-            if it.idInscripcionDestino:
-                insc_dest = db.get(Inscriptos, it.idInscripcionDestino)
-                if insc_dest:
-                    db.delete(insc_dest)
+        with db.no_autoflush:
+            for it in items:
+                # ── 1. Eliminar inscripción destino registrada ──
+                if it.idInscripcionDestino:
+                    insc_dest = db.get(Inscriptos, it.idInscripcionDestino)
+                    if insc_dest:
+                        db.delete(insc_dest)
 
-            # ── FIX: dar de baja cualquier otra inscripción activa
-            # del alumno en el curso destino del movimiento
-            # (cubre asignaciones manuales del paso 4) ──
-            otras = db.exec(
-                select(Inscriptos).where(
-                    Inscriptos.idAlumno == it.idAlumno,
-                    Inscriptos.idCurso == mov.idCursoDestino,
-                    Inscriptos.activo == True,
-                )
-            ).all()
-            for otra in otras:
-                db.delete(otra)
+                # ── 2. Eliminar cualquier otra activa en curso destino ──
+                if mov.idCursoDestino:
+                    otras = db.exec(
+                        select(Inscriptos).where(
+                            Inscriptos.idAlumno == it.idAlumno,
+                            Inscriptos.idCurso == mov.idCursoDestino,
+                            Inscriptos.activo == True,
+                        )
+                    ).all()
+                    for otra in otras:
+                        db.delete(otra)
 
-            # ── Reactivar inscripción origen ──
-            if it.idInscripcionOrigen:
-                insc_org = db.get(Inscriptos, it.idInscripcionOrigen)
-                if insc_org:
-                    insc_org.activo = True
-                    insc_org.fechaBaja = None
-                    insc_org.estado = EstadoInscripcion.Activo
-                    db.add(insc_org)
+                # ── 3. Reactivar inscripción origen (solo si no hay ya una activa en ese curso) ──
+                if it.idInscripcionOrigen:
+                    insc_org = db.get(Inscriptos, it.idInscripcionOrigen)
+                    if insc_org:
+                        # Verificar si ya existe otra inscripción activa del alumno en ese curso
+                        ya_activa = db.exec(
+                            select(Inscriptos).where(
+                                Inscriptos.idAlumno == it.idAlumno,
+                                Inscriptos.idCurso == insc_org.idCurso,
+                                Inscriptos.activo == True,
+                                Inscriptos.idInscripcion != insc_org.idInscripcion,
+                            )
+                        ).first()
 
+                        if not ya_activa:
+                            insc_org.activo = True
+                            insc_org.fechaBaja = None
+                            insc_org.estado = EstadoInscripcion.Activo
+                            db.add(insc_org)
+                        # si ya_activa existe, dejamos esa y no tocamos insc_org
+
+        db.flush()
         mov.estado = "Deshecho"
         db.add(mov)
         db.commit()
@@ -369,7 +382,6 @@ def deshacer_movimiento(db: SessionDep, idMovimiento: int):
     except Exception:
         db.rollback()
         raise
-
 # =========================
 # Inscribir
 # =========================
