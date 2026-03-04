@@ -159,10 +159,9 @@ def get_alumnos_detalle_by_curso(idCurso: int, db: SessionDep, solo_activos: boo
     )
 
     if solo_activos:
-        stmt = stmt.where(Inscriptos.activo == True)  
+        stmt = stmt.where(Inscriptos.activo == True)
 
     rows = db.exec(stmt).all()
-
     alumnos_map = {}
 
     for alumno, responsable, parentesco in rows:
@@ -214,7 +213,6 @@ def get_alumnos_detalle_por_escuela(
         .subquery()
     )
 
-    # A) Alumnos CON curso
     stmt = (
         select(Alumno, Curso, Responsable, Parentesco.parentesco)
         .join(Inscriptos, Inscriptos.idAlumno == Alumno.idAlumno)
@@ -246,13 +244,19 @@ def get_alumnos_detalle_por_escuela(
                 apellido=alumno.apellido,
                 dni=decrypt(alumno.dni) if alumno.dni else alumno.dni,
                 estado=getattr(alumno, "estado", "Activo") or "Activo",
+                direccion=decrypt(alumno.direccion) if getattr(alumno, "direccion", None) else None,
+                localidad=getattr(alumno, "localidad", None),
+                provincia=getattr(alumno, "provincia", None),
+                # En el listado general no es necesario exponer fechas
+                fecha_nacimiento=None,
+                fecha_ingreso=None,
                 idCurso=curso.idCurso,
                 nombreCurso=f"{curso.nombre} {curso.division}".strip(),
                 responsable=responsable_public,
             )
         )
 
-    # B) Alumnos SIN curso (preinscripción pendiente)
+    # Alumnos SIN curso (preinscripción pendiente)
     stmt_pre = (
         select(Alumno, Responsable, Parentesco.parentesco)
         .join(Preinscripcion, Preinscripcion.idAlumno == Alumno.idAlumno)
@@ -280,6 +284,11 @@ def get_alumnos_detalle_por_escuela(
                 apellido=alumno.apellido,
                 dni=decrypt(alumno.dni) if alumno.dni else alumno.dni,
                 estado=getattr(alumno, "estado", "Activo") or "Activo",
+                direccion=decrypt(alumno.direccion) if getattr(alumno, "direccion", None) else None,
+                localidad=getattr(alumno, "localidad", None),
+                provincia=getattr(alumno, "provincia", None),
+                fecha_nacimiento=None,
+                fecha_ingreso=None,
                 idCurso=None,
                 nombreCurso="Sin asignar",
                 responsable=responsable_public,
@@ -291,11 +300,10 @@ def get_alumnos_detalle_por_escuela(
 
 
 # ==============================================================
-# GET DETALLE POR ID
+# GET DETALLE POR ID  ← ESTE ES EL QUE USA EL FORMULARIO DE EDICIÓN
 # ==============================================================
 
 def get_alumno_detalle_por_id(db: SessionDep, idAlumno: int) -> AlumnoEscuelaDetallePublic:
-    # Primero verificar que el alumno existe
     alumno = db.get(Alumno, idAlumno)
     if not alumno:
         raise HTTPException(status_code=404, detail="Alumno no encontrado")
@@ -313,7 +321,6 @@ def get_alumno_detalle_por_id(db: SessionDep, idAlumno: int) -> AlumnoEscuelaDet
     stmt = (
         select(Alumno, Curso, Responsable, Parentesco.parentesco)
         .where(Alumno.idAlumno == idAlumno)
-        # ← outerjoin para que funcione aunque no tenga inscripción
         .outerjoin(Inscriptos, and_(Inscriptos.idAlumno == Alumno.idAlumno, Inscriptos.activo == True))
         .outerjoin(Curso, Curso.idCurso == Inscriptos.idCurso)
         .outerjoin(sub_resp, sub_resp.c.idAlumno == Alumno.idAlumno)
@@ -347,6 +354,14 @@ def get_alumno_detalle_por_id(db: SessionDep, idAlumno: int) -> AlumnoEscuelaDet
             direccion=decrypt(resp.direccion) if getattr(resp, "direccion", None) else None,
         )
 
+    # Serializar fecha_ingreso como string ISO para que el frontend la parsee fácil
+    fecha_ingreso_str: Optional[str] = None
+    if alumno.fecha_ingreso:
+        try:
+            fecha_ingreso_str = alumno.fecha_ingreso.isoformat()  # → "2022-02-28"
+        except Exception:
+            fecha_ingreso_str = str(alumno.fecha_ingreso)
+
     return AlumnoEscuelaDetallePublic(
         idAlumno=alumno.idAlumno,
         nombre=alumno.nombre,
@@ -354,7 +369,11 @@ def get_alumno_detalle_por_id(db: SessionDep, idAlumno: int) -> AlumnoEscuelaDet
         dni=decrypt(alumno.dni) if alumno.dni else alumno.dni,
         estado=getattr(alumno, "estado", "Activo") or "Activo",
         direccion=decrypt(alumno.direccion) if getattr(alumno, "direccion", None) else None,
-        # ← None si no tiene curso (egresado)
+        localidad=getattr(alumno, "localidad", None),
+        provincia=getattr(alumno, "provincia", None),
+        # ↓ CAMPOS NUEVOS: fechas con decrypt aplicado
+        fecha_nacimiento=decrypt(alumno.fecha_nacimiento) if alumno.fecha_nacimiento else None,
+        fecha_ingreso=fecha_ingreso_str,
         idCurso=curso.idCurso if curso else None,
         nombreCurso=f"{curso.nombre} {curso.division}".strip() if curso else None,
         responsable=responsable_public,
@@ -383,7 +402,6 @@ def get_alumnos_by_curso(idCurso: int, db: SessionDep):
 # ==============================================================
 
 def get_alumno_by_dni(db: SessionDep, dni: str):
-    """Busca un alumno por DNI usando el hash determinístico."""
     dni_hash = hash_for_search(dni.strip())
     stmt = select(Alumno).where(Alumno.dni_hash == dni_hash)
     return db.exec(stmt).first()
@@ -441,8 +459,6 @@ def add_alumno(db: SessionDep, alumno_in: AlumnoCreate, current_user):
             if rol.descripcion != RolDescripcion.Director:
                 raise HTTPException(status_code=403, detail="Solo Director puede crear preinscripciones")
 
-    # dni ya viene encriptado desde AlumnoCreate (via field_validator)
-    # pero para buscar duplicados necesitamos el valor plain → lo desencriptamos
     dni_encriptado = alumno_in.dni or ""
     if not dni_encriptado:
         raise HTTPException(status_code=400, detail="El DNI del alumno es obligatorio")
@@ -465,7 +481,6 @@ def add_alumno(db: SessionDep, alumno_in: AlumnoCreate, current_user):
     else:
         data = alumno_in.model_dump(exclude={"idCurso", "CUE", "cicloLectivo"})
 
-        # Validar campos obligatorios (sobre valores plain para el mensaje de error)
         _require_not_empty(_clean_str(data.get("nombre")), "nombre")
         _require_not_empty(_clean_str(data.get("apellido")), "apellido")
         _require_not_empty(_clean_str(data.get("direccion")), "direccion")
@@ -475,7 +490,6 @@ def add_alumno(db: SessionDep, alumno_in: AlumnoCreate, current_user):
         db.commit()
         db.refresh(db_alumno)
 
-    # 1) Si viene curso → matrícula real
     if getattr(alumno_in, "idCurso", None) and alumno_in.idCurso and alumno_in.idCurso > 0:
         curso = get_one_curso(idCurso=alumno_in.idCurso, db=db)
         if curso is None:
@@ -493,8 +507,6 @@ def add_alumno(db: SessionDep, alumno_in: AlumnoCreate, current_user):
             insc = Inscriptos(idCurso=alumno_in.idCurso, idAlumno=db_alumno.idAlumno)
             db.add(insc)
             db.commit()
-
-    # 2) Si NO viene curso → preinscripción
     else:
         cue = _clean_str(getattr(alumno_in, "CUE", None))
         ciclo = _clean_str(getattr(alumno_in, "cicloLectivo", None))
@@ -530,7 +542,6 @@ def add_alumno(db: SessionDep, alumno_in: AlumnoCreate, current_user):
 def update_alumno(alumno_existente: Alumno, alumno_nuevo: AlumnoUpdate, db: SessionDep):
     data = alumno_nuevo.model_dump(exclude_unset=True)
 
-    # Validar DNI duplicado usando hash
     if "dni" in data:
         dni_encriptado = data["dni"]
         if not dni_encriptado:
@@ -541,10 +552,8 @@ def update_alumno(alumno_existente: Alumno, alumno_nuevo: AlumnoUpdate, db: Sess
         if _exists_otro_alumno_con_dni(db, dni_plain, alumno_existente.idAlumno):
             raise HTTPException(status_code=400, detail="Ya existe otro alumno con ese DNI")
 
-        # Actualizar también el hash
         data["dni_hash"] = hash_for_search(dni_plain)
 
-    # Validar campos obligatorios
     campos_obligatorios = ["nombre", "apellido", "fecha_nacimiento", "fecha_ingreso", "direccion", "estado"]
     for campo in campos_obligatorios:
         if campo in data:
@@ -640,7 +649,6 @@ def get_alumnos_historial_por_ciclo(
     if solo_activos:
         stmt = stmt.where(Inscriptos.activo == True)  # noqa: E712
 
-    # Búsqueda por q: nombre/apellido con ilike, DNI con hash exacto
     if q:
         q_clean = q.strip()
         term = f"%{q_clean}%"
@@ -697,7 +705,6 @@ def get_alumnos_historial_por_ciclo(
             )
         )
 
-    # Preinscriptos sin curso
     if not solo_activos:
         stmt_pre = (
             select(Alumno, Responsable, Parentesco.parentesco)

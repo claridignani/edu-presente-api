@@ -321,16 +321,18 @@ def read_asistencias_by_curso(
     idCurso: int,
     session: SessionDep,
     offset: int = 0,
-    limit: Annotated[int, Query(le=200)] = 100,
+    limit: Annotated[int, Query(le=10000)] = 10000,  
+    desde: Optional[date] = Query(default=None),      
+    hasta: Optional[date] = Query(default=None),      
 ):
-    rows = get_asistencias_by_curso(db=session, idCurso=idCurso, offset=offset, limit=limit)
+    rows = get_asistencias_by_curso(
+        db=session, idCurso=idCurso, offset=offset, limit=limit,
+        desde=desde, hasta=hasta                       
+    )
     return [
         AsistenciaCreate(
-            idCurso=r.idCurso,
-            idAlumno=r.idAlumno,
-            fecha=r.fecha,
-            estado=r.estado,
-            lluvia=r.lluvia,
+            idCurso=r.idCurso, idAlumno=r.idAlumno,
+            fecha=r.fecha, estado=r.estado, lluvia=r.lluvia,
         )
         for r in rows
     ]

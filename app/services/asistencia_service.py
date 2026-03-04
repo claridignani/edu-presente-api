@@ -151,15 +151,23 @@ def get_asistencias_by_curso_fecha(db: SessionDep, idCurso: int, fecha: date):
     return db.exec(stmt).all()
 
 
-def get_asistencias_by_curso(db: SessionDep, idCurso: int, offset: int, limit: Annotated[int, Query(le=200)]):
+def get_asistencias_by_curso(
+    db: SessionDep,
+    idCurso: int,
+    offset: int = 0,
+    limit: Annotated[int, Query(le=10000)] = 10000,  
+    desde: Optional[date] = None,                    
+    hasta: Optional[date] = None,                     
+):
     ensure_curso_exists(db, idCurso)
-    stmt = (
-        select(Asistencia)
-        .where(Asistencia.idCurso == idCurso)
-        .order_by(Asistencia.fecha.desc())
-        .offset(offset)
-        .limit(limit)
-    )
+    stmt = select(Asistencia).where(Asistencia.idCurso == idCurso)
+
+    if desde:
+        stmt = stmt.where(Asistencia.fecha >= desde)  
+    if hasta:
+        stmt = stmt.where(Asistencia.fecha <= hasta)
+
+    stmt = stmt.order_by(Asistencia.fecha.desc()).offset(offset).limit(limit)
     return db.exec(stmt).all()
 
 
