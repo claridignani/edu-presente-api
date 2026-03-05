@@ -177,9 +177,13 @@ async def upsert_asistencia(
     existente = get_one_asistencia(db, payload.idCurso, payload.idAlumno, payload.fecha)
 
     if existente:
+        ya_notificado = bool(existente.wamid)  # idempotencia: conservar wamid original
         existente.estado = payload.estado
         existente.lluvia = payload.lluvia
-        existente.wamid = payload.wamid
+        # Preservar el wamid existente: el frontend nunca envía wamid (viene None),
+        # sobreescribirlo borraría el vínculo con la respuesta del padre.
+        if payload.wamid:
+            existente.wamid = payload.wamid
         db.add(existente)
         db.commit()
         db.refresh(existente)
@@ -192,7 +196,8 @@ async def upsert_asistencia(
                 db=db, idCurso=existente.idCurso, fecha=existente.fecha, umbral=3
             )
 
-        if payload.estado == "Ausente":
+        # Solo enviar si es la primera vez (sin wamid previo)
+        if payload.estado == "Ausente" and not ya_notificado:
             datos = _cargar_datos_whatsapp(db, [alumno.idAlumno], {alumno.idAlumno: alumno})
             for d in datos:
                 d["idCurso"] = existente.idCurso
@@ -243,13 +248,30 @@ async def upsert_asistencias_bulk(
     ensure_alumnos_exist(db, [p.idAlumno for p in payloads])
 
     # ------- Batch: cargar alumnos ausentes antes del commit -------
-    ausentes_ids = list({p.idAlumno for p in payloads if p.estado == "Ausente"})
+    ausentes_ids_total = list({p.idAlumno for p in payloads if p.estado == "Ausente"})
     alumnos_map: dict[int, Alumno] = {}
-    if ausentes_ids:
-        stmt_a = select(Alumno).where(Alumno.idAlumno.in_(ausentes_ids))
+    if ausentes_ids_total:
+        stmt_a = select(Alumno).where(Alumno.idAlumno.in_(ausentes_ids_total))
         alumnos_map = {a.idAlumno: a for a in db.exec(stmt_a).all()}
 
-    # Batch único: responsable principal por alumno ausente (antes del commit)
+    # Idempotencia: excluir alumnos que ya tienen wamid para esta fecha y curso
+    # (la asistencia ya fue notificada en un envío anterior)
+    ausentes_ya_notificados: set[int] = set()
+    if ausentes_ids_total:
+        primera_idCurso = next(p.idCurso for p in payloads if p.estado == "Ausente")
+        primera_fecha   = next(p.fecha   for p in payloads if p.estado == "Ausente")
+        stmt_wamids = select(Asistencia.idAlumno).where(
+            Asistencia.idAlumno.in_(ausentes_ids_total),
+            Asistencia.idCurso == primera_idCurso,
+            Asistencia.fecha   == primera_fecha,
+            Asistencia.wamid   != None,
+            Asistencia.wamid   != "",
+        )
+        ausentes_ya_notificados = set(db.exec(stmt_wamids).all())
+
+    ausentes_ids = [i for i in ausentes_ids_total if i not in ausentes_ya_notificados]
+
+    # Batch único: responsable principal por alumno ausente SIN notificación previa
     datos_envio = _cargar_datos_whatsapp(db, ausentes_ids, alumnos_map)
 
     # -------- Upsert registros --------
