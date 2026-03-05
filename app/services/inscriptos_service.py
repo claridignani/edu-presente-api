@@ -532,6 +532,7 @@ def get_timeline_alumno(db: SessionDep, id_alumno: int) -> list[dict]:
 
     stmt_mov = (
         select(
+            MovimientoPromocion.idMovimiento,
             MovimientoPromocion.fecha,
             MovimientoPromocionItem.accion,
             CursoOrigen.nombre.label("orig_nombre"),
@@ -569,7 +570,13 @@ def get_timeline_alumno(db: SessionDep, id_alumno: int) -> list[dict]:
             if dest_txt:
                 detalle += f" a {dest_txt}"
 
-        timeline.append({"fecha": r.fecha, "accion": accion, "detalle": detalle})
+        timeline.append({
+        "idMovimiento": r.idMovimiento,   
+        "fecha": r.fecha,
+        "accion": accion,
+        "detalle": detalle
+    })
+
 
     stmt_cc = (
         select(Inscriptos, Curso)
