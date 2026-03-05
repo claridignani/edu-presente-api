@@ -1,10 +1,12 @@
 from datetime import datetime, date
+from typing import Optional
 from sqlmodel import SQLModel, Field
 
 class InvitacionDocenteCreate(SQLModel):
     director_id: int
     idCurso: int
     tipo: str = Field(default="Suplente", max_length=20)
+    idUsuario: Optional[int] = None    # ← NUEVO
     fechaDesde: date | None = None
     fechaHasta: date | None = None
 
@@ -14,6 +16,7 @@ class InvitacionDocentePublic(SQLModel):
     CUE: str
     idCurso: int
     tipo: str
+    idUsuario: Optional[int] = None    # ← NUEVO
     fechaDesde: date | None = None
     fechaHasta: date | None = None
     usada: bool

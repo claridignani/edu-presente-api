@@ -129,6 +129,7 @@ def get_cursos_by_usuario(db: SessionDep, idUsuario: int):
         .join(Escuela, Escuela.CUE == Curso.CUE)
         .where(
             CursoDocente.idUsuario == idUsuario,
+            CursoDocente.estado == "Activo",
             or_(CursoDocente.fechaDesde == None, CursoDocente.fechaDesde <= hoy),
             or_(CursoDocente.fechaHasta == None, CursoDocente.fechaHasta >= hoy),
         )

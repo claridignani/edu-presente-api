@@ -23,6 +23,16 @@ from app.routers.webhook import router as whatsapp_webhook_router
 from app.routers.escuela_public import router as escuela_public_router
 from app.routers.invitacion_public import router as invitacion_public_router
 from app.routers.usuario_public import router as usuario_public_router
+from app.routers import requisitos
+from app.routers.pases import router as pases_router
+from dotenv import load_dotenv
+load_dotenv()
+import logging
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
 
 
 app = FastAPI()
@@ -34,7 +44,7 @@ origins = [
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -50,6 +60,7 @@ app.include_router(escuela_public_router)
 app.include_router(invitacion_public_router)
 app.include_router(usuario_public_router)
 app.include_router(preinscripcion_router)
+
 
 # ✅ PRIVADO (con JWT)
 auth_dep = [Depends(get_current_user)]
@@ -67,4 +78,5 @@ app.include_router(invitacion_docente.router, dependencies=auth_dep)
 app.include_router(inscriptos_admin_router, dependencies=auth_dep)
 app.include_router(alertas_router, dependencies=auth_dep)
 app.include_router(ia_router, dependencies=auth_dep)
-app.include_router(whatsapp_webhook_router)
+app.include_router(requisitos.router, dependencies=auth_dep)
+app.include_router(pases_router, dependencies=auth_dep)

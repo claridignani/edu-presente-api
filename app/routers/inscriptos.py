@@ -46,7 +46,7 @@ def desinscribir(idCurso: int, idAlumno: int, session: SessionDep, current_user:
     return desinscribir_alumno(idCurso=idCurso, idAlumno=idAlumno, db=session)
 
 
-@router.get("/curso/{idCurso}", response_model=list[AlumnoPublic])
+@router.get("/curso/{idCurso}")
 def listar_inscriptos(idCurso: int, session: SessionDep, solo_activos: bool = True):
     return get_inscriptos_by_curso(idCurso=idCurso, db=session, solo_activos=solo_activos)
 

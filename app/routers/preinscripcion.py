@@ -3,6 +3,7 @@ from app.dependencies import SessionDep
 from app.models.preinscripcion import Preinscripcion
 from app.models.alumno import Alumno
 from sqlmodel import select
+from app.core.encryption import decrypt  # agregar este import
 
 router = APIRouter(prefix="/preinscripciones", tags=["Preinscripciones"])
 
@@ -27,7 +28,7 @@ def get_preinscripciones_escuela(
             "idAlumno": alumno.idAlumno,
             "nombre": alumno.nombre,
             "apellido": alumno.apellido,
-            "dni": alumno.dni,
+            "dni": decrypt(alumno.dni) if alumno.dni else None,  # ← fix
             "estado": "Pendiente",
             "idCurso": 0,
             "nombreCurso": "Sin asignar",

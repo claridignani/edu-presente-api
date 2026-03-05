@@ -59,7 +59,7 @@ class PromocionItem(SQLModel):
 class PromocionarRequest(SQLModel):
     director_id: int
     idCursoOrigen: int
-    idCursoDestino: int
+    idCursoDestino: Optional[int] = None
     alumnos: list[PromocionItem]
     fecha: date | None = None
 

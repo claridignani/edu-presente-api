@@ -15,6 +15,7 @@ from app.schemas.inscriptos import EstadoInscripcion, AccionPromocion, Inscripci
 from app.schemas.movimientos import PromocionarOut
 from app.models.preinscripcion import Preinscripcion
 from app.services.curso_service import get_one_curso
+from app.core.encryption import decrypt
 
 
 # =========================
@@ -68,10 +69,6 @@ def _buscar_destino_cambio_curso(
     fecha_desde: date,
     idCurso_origen: int,
 ):
-    """
-    Busca la 'siguiente' inscripción del alumno dentro del mismo ciclo,
-    posterior (o igual) a fecha_desde, que sea a otro curso.
-    """
     stmt = (
         select(Inscriptos, Curso)
         .join(Curso, Curso.idCurso == Inscriptos.idCurso)
@@ -92,17 +89,27 @@ def _buscar_destino_cambio_curso(
 # =========================
 def promocionar_alumnos(
     idCursoOrigen: int,
-    idCursoDestino: int,
+    idCursoDestino: int | None,
     alumnos,
     db: SessionDep,
     fecha: date | None = None,
     director_id: int | None = None,
 ) -> PromocionarOut:
     origen = _get_curso_or_404(db, idCursoOrigen)
-    destino = _get_curso_or_404(db, idCursoDestino)
 
-    if origen.cicloLectivo == destino.cicloLectivo:
-        raise HTTPException(status_code=400, detail="Curso destino debe ser de OTRO ciclo lectivo")
+    necesita_destino = any(
+        (item.accion in (AccionPromocion.Promociona, AccionPromocion.Repite))
+        for item in alumnos
+    )
+
+    if necesita_destino and not idCursoDestino:
+        raise HTTPException(status_code=422, detail="Falta idCursoDestino (requerido para Promociona/Repite)")
+
+    destino = None
+    if necesita_destino:
+        destino = _get_curso_or_404(db, int(idCursoDestino))
+        if origen.cicloLectivo == destino.cicloLectivo:
+            raise HTTPException(status_code=400, detail="Curso destino debe ser de OTRO ciclo lectivo")
 
     hoy = fecha or date.today()
     cue = str(origen.CUE)
@@ -111,32 +118,31 @@ def promocionar_alumnos(
         raise HTTPException(status_code=422, detail="Falta director_id válido")
 
     try:
-        # 1) Crear movimiento (acta)
         mov = MovimientoPromocion(
             cue=cue,
             director_id=int(director_id),
             idCursoOrigen=int(idCursoOrigen),
-            idCursoDestino=int(idCursoDestino),
+            idCursoDestino=(int(idCursoDestino) if necesita_destino else None),
             fecha=hoy,
             estado="Activo",
         )
         db.add(mov)
-        db.flush()  # ✅ para tener mov.idMovimiento sin commit
+        db.flush()
 
         for item in alumnos:
             _get_alumno_or_404(db, item.idAlumno)
 
-            # 2) Buscar inscripción activa en ORIGEN
+            # ✅ traemos el objeto directamente, sin doble búsqueda
             insc_origen = db.exec(
                 select(Inscriptos).where(
                     Inscriptos.idCurso == idCursoOrigen,
                     Inscriptos.idAlumno == item.idAlumno,
-                    Inscriptos.activo == True,  # noqa: E712
+                    Inscriptos.activo == True,
                 )
             ).first()
+
             id_insc_origen = int(insc_origen.idInscripcion) if insc_origen else None
 
-            # 3) Cerrar origen según acción
             if insc_origen:
                 if item.accion == AccionPromocion.Promociona:
                     _cerrar_inscripcion(insc_origen, EstadoInscripcion.Promocionado, hoy)
@@ -146,23 +152,18 @@ def promocionar_alumnos(
                     _cerrar_inscripcion(insc_origen, EstadoInscripcion.Egreso, hoy)
                 elif item.accion == AccionPromocion.Baja:
                     _cerrar_inscripcion(insc_origen, EstadoInscripcion.Baja, hoy)
-
                 db.add(insc_origen)
 
-            # ✅ Asegura que el UPDATE del origen salga antes de tocar destino/pre
             db.flush()
 
-            # 4) Destino / Preinscripción
             id_insc_destino = None
 
-            # ✅ PROMOCIONA: crea o reutiliza inscripción en curso destino
             if item.accion == AccionPromocion.Promociona:
                 estado_dest = EstadoInscripcion.Activo
-
                 existente = db.exec(
                     select(Inscriptos)
                     .where(
-                        Inscriptos.idCurso == idCursoDestino,
+                        Inscriptos.idCurso == int(idCursoDestino),
                         Inscriptos.idAlumno == item.idAlumno,
                     )
                     .with_for_update()
@@ -177,7 +178,7 @@ def promocionar_alumnos(
                     id_insc_destino = int(existente.idInscripcion)
                 else:
                     nueva = Inscriptos(
-                        idCurso=idCursoDestino,
+                        idCurso=int(idCursoDestino),
                         idAlumno=item.idAlumno,
                         fechaAlta=hoy,
                         activo=True,
@@ -187,7 +188,6 @@ def promocionar_alumnos(
                     db.flush()
                     id_insc_destino = int(nueva.idInscripcion)
 
-            # ✅ REPITE: NO va a destino -> queda SIN CURSO (Preinscripción Pendiente en ciclo nuevo)
             elif item.accion == AccionPromocion.Repite:
                 stmt_pre = (
                     select(Preinscripcion)
@@ -213,19 +213,15 @@ def promocionar_alumnos(
                             estado="Pendiente",
                         )
                     )
+                id_insc_destino = None
 
-                id_insc_destino = None  # explícito
-
-            # Egresa/Baja: no crea destino ni preinscripción
-
-            # 5) Item del acta
             it = MovimientoPromocionItem(
                 idMovimiento=int(mov.idMovimiento),
                 idAlumno=int(item.idAlumno),
-                accion=item.accion.value,  # ✅ "Promociona" | "Repite" | "Egresa" | "Baja"
+                accion=item.accion.value,
                 idCursoOrigen=int(idCursoOrigen),
-                idCursoDestino=int(idCursoDestino),
-                idInscripcionOrigen=id_insc_origen,
+                idCursoDestino=(int(idCursoDestino) if necesita_destino else None),
+                idInscripcionOrigen=id_insc_origen,  # ✅ ahora es int o None
                 idInscripcionDestino=id_insc_destino,
             )
             db.add(it)
@@ -239,7 +235,7 @@ def promocionar_alumnos(
 
 
 # =========================
-# ✅ Listar últimos movimientos por CUE (actas)
+# Listar movimientos por CUE (actas)
 # =========================
 def listar_movimientos_por_cue(db: SessionDep, cue: str, limit: int = 20) -> list[dict]:
     from sqlalchemy.orm import aliased
@@ -257,7 +253,7 @@ def listar_movimientos_por_cue(db: SessionDep, cue: str, limit: int = 20) -> lis
             CursoDestino.cicloLectivo.label("dest_ciclo")
         )
         .join(CursoOrigen, CursoOrigen.idCurso == MovimientoPromocion.idCursoOrigen)
-        .join(CursoDestino, CursoDestino.idCurso == MovimientoPromocion.idCursoDestino)
+        .outerjoin(CursoDestino, CursoDestino.idCurso == MovimientoPromocion.idCursoDestino)
         .where(MovimientoPromocion.cue == cue)
         .order_by(desc(MovimientoPromocion.created_at))
         .limit(limit)
@@ -274,7 +270,7 @@ def listar_movimientos_por_cue(db: SessionDep, cue: str, limit: int = 20) -> lis
             "estado": m.estado,
             "created_at": m.created_at,
             "cursoOrigen": f"{row.orig_nombre} {row.orig_div} ({row.orig_ciclo})",
-            "cursoDestino": f"{row.dest_nombre} {row.dest_div} ({row.dest_ciclo})",
+            "cursoDestino": f"{row.dest_nombre} {row.dest_div} ({row.dest_ciclo})" if row.dest_nombre else "Sin destino (egreso)",
             "idCursoOrigen": m.idCursoOrigen,
             "idCursoDestino": m.idCursoDestino,
             "director_id": m.director_id
@@ -283,7 +279,8 @@ def listar_movimientos_por_cue(db: SessionDep, cue: str, limit: int = 20) -> lis
 
 
 # =========================
-# ✅ Detalle movimiento
+# Detalle movimiento
+# ✅ FIX: decrypt(item.Alumno.dni) en lugar de item.Alumno.dni
 # =========================
 def detalle_movimiento(db: SessionDep, idMovimiento: int) -> dict:
     mov = db.get(MovimientoPromocion, idMovimiento)
@@ -298,20 +295,21 @@ def detalle_movimiento(db: SessionDep, idMovimiento: int) -> dict:
     results = db.exec(stmt).all()
 
     co = db.get(Curso, mov.idCursoOrigen)
-    cd = db.get(Curso, mov.idCursoDestino)
+    cd = db.get(Curso, mov.idCursoDestino) if mov.idCursoDestino else None
 
     return {
         "idMovimiento": mov.idMovimiento,
         "fecha": mov.fecha,
         "estado": mov.estado,
         "cursoOrigen": f"{co.nombre} {co.division}",
-        "cursoDestino": f"{cd.nombre} {cd.division}",
+        "cursoDestino": f"{cd.nombre} {cd.division}" if cd else "Sin destino (egreso)",
         "items": [
             {
                 "idItem": item.MovimientoPromocionItem.idItem,
                 "idAlumno": item.Alumno.idAlumno,
                 "alumno": f"{item.Alumno.apellido}, {item.Alumno.nombre}",
-                "dni": item.Alumno.dni,
+                # ✅ FIX #1: DNI descifrado en detalle de acta
+                "dni": decrypt(item.Alumno.dni) if item.Alumno.dni else "—",
                 "accion": item.MovimientoPromocionItem.accion
             }
             for item in results
@@ -320,13 +318,12 @@ def detalle_movimiento(db: SessionDep, idMovimiento: int) -> dict:
 
 
 # =========================
-# ✅ Deshacer (DELETE destino + reabrir origen)
+# Deshacer movimiento
 # =========================
 def deshacer_movimiento(db: SessionDep, idMovimiento: int):
     mov = db.get(MovimientoPromocion, idMovimiento)
     if not mov:
         raise HTTPException(status_code=404, detail="Movimiento no encontrado")
-
     if mov.estado != "Activo":
         raise HTTPException(status_code=400, detail="Este movimiento ya fue deshecho o no está activo")
 
@@ -335,33 +332,58 @@ def deshacer_movimiento(db: SessionDep, idMovimiento: int):
     ).all()
 
     try:
-        for it in items:
-            if it.idInscripcionDestino:
-                insc_dest = db.get(Inscriptos, it.idInscripcionDestino)
-                if insc_dest:
-                    db.delete(insc_dest)
+        with db.no_autoflush:
+            for it in items:
+                # ── 1. Eliminar inscripción destino registrada ──
+                if it.idInscripcionDestino:
+                    insc_dest = db.get(Inscriptos, it.idInscripcionDestino)
+                    if insc_dest:
+                        db.delete(insc_dest)
 
-            if it.idInscripcionOrigen:
-                insc_org = db.get(Inscriptos, it.idInscripcionOrigen)
-                if insc_org:
-                    insc_org.activo = True
-                    insc_org.fechaBaja = None
-                    insc_org.estado = EstadoInscripcion.Activo
-                    db.add(insc_org)
+                # ── 2. Eliminar cualquier otra activa en curso destino ──
+                if mov.idCursoDestino:
+                    otras = db.exec(
+                        select(Inscriptos).where(
+                            Inscriptos.idAlumno == it.idAlumno,
+                            Inscriptos.idCurso == mov.idCursoDestino,
+                            Inscriptos.activo == True,
+                        )
+                    ).all()
+                    for otra in otras:
+                        db.delete(otra)
 
+                # ── 3. Reactivar inscripción origen (solo si no hay ya una activa en ese curso) ──
+                if it.idInscripcionOrigen:
+                    insc_org = db.get(Inscriptos, it.idInscripcionOrigen)
+                    if insc_org:
+                        # Verificar si ya existe otra inscripción activa del alumno en ese curso
+                        ya_activa = db.exec(
+                            select(Inscriptos).where(
+                                Inscriptos.idAlumno == it.idAlumno,
+                                Inscriptos.idCurso == insc_org.idCurso,
+                                Inscriptos.activo == True,
+                                Inscriptos.idInscripcion != insc_org.idInscripcion,
+                            )
+                        ).first()
+
+                        if not ya_activa:
+                            insc_org.activo = True
+                            insc_org.fechaBaja = None
+                            insc_org.estado = EstadoInscripcion.Activo
+                            db.add(insc_org)
+                        # si ya_activa existe, dejamos esa y no tocamos insc_org
+
+        db.flush()
         mov.estado = "Deshecho"
         db.add(mov)
-
         db.commit()
         return {"ok": True}
 
     except Exception:
         db.rollback()
         raise
-
-
 # =========================
-# INSCRIBIR (con regla 1-activa por ciclo)
+# Inscribir
 # =========================
 def inscribir_alumno(idCurso: int, idAlumno: int, db: SessionDep, fechaAlta: date | None = None):
     curso = _get_curso_or_404(db, idCurso)
@@ -377,13 +399,11 @@ def inscribir_alumno(idCurso: int, idAlumno: int, db: SessionDep, fechaAlta: dat
     if db.exec(stmt_mismo).first():
         raise HTTPException(status_code=400, detail="El alumno ya está inscripto y activo en este curso")
 
-    # 1) Cerrar inscripción activa en el mismo ciclo (regla 1-activa por ciclo)
     activa = _get_inscripcion_activa_en_ciclo(db, idAlumno, str(curso.cicloLectivo))
     if activa and activa.idCurso != idCurso:
         _cerrar_inscripcion(activa, EstadoInscripcion.CambioCurso, hoy)
         db.add(activa)
 
-    # 2) Crear nueva inscripción
     nueva = Inscriptos(
         idCurso=idCurso,
         idAlumno=idAlumno,
@@ -393,7 +413,6 @@ def inscribir_alumno(idCurso: int, idAlumno: int, db: SessionDep, fechaAlta: dat
     )
     db.add(nueva)
 
-    # 3) ✅ Si había preinscripción pendiente para (CUE + ciclo), marcarla como Asignada
     stmt_pre = (
         select(Preinscripcion)
         .where(
@@ -414,8 +433,9 @@ def inscribir_alumno(idCurso: int, idAlumno: int, db: SessionDep, fechaAlta: dat
     db.refresh(nueva)
     return nueva
 
+
 # =========================
-# BAJA / DESINSCRIBIR (cierra)
+# Desinscribir
 # =========================
 def desinscribir_alumno(idCurso: int, idAlumno: int, db: SessionDep, fecha: date | None = None):
     hoy = fecha or date.today()
@@ -437,22 +457,71 @@ def desinscribir_alumno(idCurso: int, idAlumno: int, db: SessionDep, fecha: date
 
 
 # =========================
-# LISTAR INSCRIPTOS (activos por defecto)
+# Listar inscriptos por curso
 # =========================
 def get_inscriptos_by_curso(idCurso: int, db: SessionDep, solo_activos: bool = True):
     _get_curso_or_404(db, idCurso)
 
     stmt = (
-        select(Alumno)
-        .join(Inscriptos, Inscriptos.idAlumno == Alumno.idAlumno)
+        select(
+            Alumno.idAlumno.label("idAlumno"),
+            Alumno.nombre.label("nombre"),
+            Alumno.apellido.label("apellido"),
+            Alumno.dni.label("dni"),
+            getattr(Alumno, "fecha_nacimiento", None).label("fecha_nacimiento") if hasattr(Alumno, "fecha_nacimiento") else func.null().label("fecha_nacimiento"),
+            getattr(Alumno, "direccion", None).label("direccion") if hasattr(Alumno, "direccion") else func.null().label("direccion"),
+            # ✅ la key que tu response_model está pidiendo:
+            Inscriptos.fechaAlta.label("fecha_ingreso"),
+            # extras (no molestan, y sirven):
+            Inscriptos.idInscripcion.label("idInscripcion"),
+            Inscriptos.idCurso.label("idCurso"),
+            Inscriptos.activo.label("activo"),
+            Inscriptos.estado.label("estado"),
+            Inscriptos.fechaBaja.label("fechaBaja"),
+        )
+        .select_from(Inscriptos)
+        .join(Alumno, Alumno.idAlumno == Inscriptos.idAlumno)
         .where(Inscriptos.idCurso == idCurso)
     )
+
     if solo_activos:
         stmt = stmt.where(Inscriptos.activo == True)  # noqa: E712
 
-    return db.exec(stmt).all()
+    rows = db.exec(stmt).all()
+
+    out = []
+    for r in rows:
+        m = r._mapping
+
+        dni_raw = m.get("dni")
+        fn_raw = m.get("fecha_nacimiento")
+        dir_raw = m.get("direccion")
+
+        out.append({
+            "idAlumno": int(m["idAlumno"]),
+            "nombre": m.get("nombre"),
+            "apellido": m.get("apellido"),
+            "dni": decrypt(dni_raw) if dni_raw else None,
+            "fecha_nacimiento": decrypt(fn_raw) if fn_raw else None,
+            "direccion": decrypt(dir_raw) if dir_raw else None,
+
+            # ✅ requerido por tu response_model
+            "fecha_ingreso": m.get("fecha_ingreso"),
+
+            # extras
+            "idInscripcion": int(m["idInscripcion"]) if m.get("idInscripcion") is not None else None,
+            "idCurso": int(m["idCurso"]) if m.get("idCurso") is not None else None,
+            "activo": bool(m.get("activo")),
+            "estado": m.get("estado"),
+            "fechaBaja": m.get("fechaBaja"),
+        })
+
+    return out
 
 
+# =========================
+# Timeline alumno
+# =========================
 def get_timeline_alumno(db: SessionDep, id_alumno: int) -> list[dict]:
     from sqlalchemy.orm import aliased
 
@@ -461,11 +530,9 @@ def get_timeline_alumno(db: SessionDep, id_alumno: int) -> list[dict]:
 
     timeline: list[dict] = []
 
-    # =========================================================
-    # 1) Movimientos "oficiales" (actas)
-    # =========================================================
     stmt_mov = (
         select(
+            MovimientoPromocion.idMovimiento,
             MovimientoPromocion.fecha,
             MovimientoPromocionItem.accion,
             CursoOrigen.nombre.label("orig_nombre"),
@@ -485,7 +552,6 @@ def get_timeline_alumno(db: SessionDep, id_alumno: int) -> list[dict]:
 
     for r in movs:
         accion = str(r.accion or "").strip()
-
         orig_txt = _fmt_curso(r.orig_nombre, r.orig_div, r.orig_ciclo)
         dest_txt = _fmt_curso(r.dest_nombre, r.dest_div, r.dest_ciclo) if r.dest_nombre else None
 
@@ -493,28 +559,25 @@ def get_timeline_alumno(db: SessionDep, id_alumno: int) -> list[dict]:
             detalle = f"De {orig_txt}"
             if dest_txt:
                 detalle += f" a {dest_txt}"
-
         elif accion == "Repite":
-            # ✅ no mencionar el curso destino ni el ciclo (porque después aparece "AsignacionCurso")
             detalle = f"Repite en {orig_txt} "
-
         elif accion == "Baja":
-            # ✅ no decir curso destino, porque no corresponde
             detalle = f"Baja en {orig_txt}"
-
         elif accion == "Egresa":
             detalle = f"Egresa de {orig_txt}"
-
         else:
             detalle = f"De {orig_txt}"
             if dest_txt:
                 detalle += f" a {dest_txt}"
 
-        timeline.append({"fecha": r.fecha, "accion": accion, "detalle": detalle})
+        timeline.append({
+        "idMovimiento": r.idMovimiento,   
+        "fecha": r.fecha,
+        "accion": accion,
+        "detalle": detalle
+    })
 
-    # =========================================================
-    # 2) Cambios de curso (dentro del mismo ciclo) desde Inscriptos
-    # =========================================================
+
     stmt_cc = (
         select(Inscriptos, Curso)
         .join(Curso, Curso.idCurso == Inscriptos.idCurso)
@@ -548,11 +611,6 @@ def get_timeline_alumno(db: SessionDep, id_alumno: int) -> list[dict]:
             "detalle": detalle
         })
 
-    # =========================================================
-    # 3) Asignación desde Preinscripción (repitentes “sin curso”)
-    #    - Cuando después asignás un curso en ese ciclo, NO es CambioCurso,
-    #      entonces lo mostramos como "AsignacionCurso".
-    # =========================================================
     stmt_pre = (
         select(Preinscripcion)
         .where(Preinscripcion.idAlumno == id_alumno)
@@ -560,7 +618,6 @@ def get_timeline_alumno(db: SessionDep, id_alumno: int) -> list[dict]:
     )
     pres = db.exec(stmt_pre).all()
 
-    # Map (CUE|ciclo) -> última preinscripción
     pre_map: dict[str, Preinscripcion] = {}
     for p in pres:
         key = f"{p.CUE}|{p.cicloLectivo}"
@@ -568,7 +625,6 @@ def get_timeline_alumno(db: SessionDep, id_alumno: int) -> list[dict]:
             pre_map[key] = p
 
     if pre_map:
-        # Traemos inscripciones del alumno con su curso
         stmt_insc = (
             select(Inscriptos, Curso)
             .join(Curso, Curso.idCurso == Inscriptos.idCurso)
@@ -582,13 +638,9 @@ def get_timeline_alumno(db: SessionDep, id_alumno: int) -> list[dict]:
             pre = pre_map.get(key)
             if not pre:
                 continue
-
-            # Solo si está ASIGNADA (es decir, ya le pusieron curso)
             if str(pre.estado or "").strip().lower() != "asignada":
                 continue
 
-            # Evitar duplicados: mostramos la asignación en la fecha de alta de la inscripción
-            # (si hubo varias, igual va a aparecer la más reciente; está ok)
             detalle = f"Ciclo {curso.cicloLectivo}: asignado a {_fmt_curso(curso.nombre, curso.division, curso.cicloLectivo)}"
             timeline.append({
                 "fecha": insc.fechaAlta,
@@ -596,14 +648,12 @@ def get_timeline_alumno(db: SessionDep, id_alumno: int) -> list[dict]:
                 "detalle": detalle,
             })
 
-    # =========================================================
-    # 4) Orden final por fecha desc
-    # =========================================================
     timeline.sort(key=lambda x: x["fecha"], reverse=True)
     return timeline
 
+
 # =========================
-# HISTORIAL INSCRIPCIONES (sin duplicado)
+# Historial inscripciones alumno
 # =========================
 def get_historial_inscripciones_alumno(db: SessionDep, idAlumno: int) -> list[InscripcionHistorialOut]:
     _get_alumno_or_404(db, idAlumno)
@@ -616,7 +666,6 @@ def get_historial_inscripciones_alumno(db: SessionDep, idAlumno: int) -> list[In
     )
 
     rows = db.exec(stmt).all()
-
     out: list[InscripcionHistorialOut] = []
     for insc, curso in rows:
         out.append(
@@ -634,6 +683,10 @@ def get_historial_inscripciones_alumno(db: SessionDep, idAlumno: int) -> list[In
         )
     return out
 
+
+# =========================
+# ✅ FIX #2: Auditoría global — decrypt en AMBOS bloques
+# =========================
 def get_auditoria_alumnos_detalle(
     db: SessionDep,
     cue: str,
@@ -685,7 +738,8 @@ def get_auditoria_alumnos_detalle(
                 "fecha": r.fecha,
                 "idAlumno": r.idAlumno,
                 "alumno": f"{r.apellido}, {r.nombre}",
-                "dni": r.dni,
+                # ✅ FIX: decrypt en lugar de r.dni crudo
+                "dni": decrypt(r.dni) if r.dni else "—",
                 "accion": r.accion,
                 "cursoOrigen": f"{r.orig_nombre} {r.orig_div}",
                 "cursoDestino": f"{r.dest_nombre} {r.dest_div}" if r.dest_nombre else "—"
@@ -728,7 +782,8 @@ def get_auditoria_alumnos_detalle(
                 "fecha": insc_origen.fechaBaja,
                 "idAlumno": int(alumno.idAlumno),
                 "alumno": f"{alumno.apellido}, {alumno.nombre}",
-                "dni": alumno.dni,
+                # ✅ FIX: decrypt en lugar de alumno.dni crudo
+                "dni": decrypt(alumno.dni) if alumno.dni else "—",
                 "accion": "CambioCurso",
                 "cursoOrigen": f"{curso_origen.nombre} {curso_origen.division}",
                 "cursoDestino": dest_txt
@@ -737,6 +792,10 @@ def get_auditoria_alumnos_detalle(
     auditoria.sort(key=lambda x: x["fecha"], reverse=True)
     return auditoria
 
+
+# =========================
+# Auditoría individual alumno
+# =========================
 def get_auditoria_alumno(db: SessionDep, idAlumno: int) -> list[dict]:
     from sqlalchemy.orm import aliased
 
@@ -747,7 +806,6 @@ def get_auditoria_alumno(db: SessionDep, idAlumno: int) -> list[dict]:
 
     out: list[dict] = []
 
-    # 1) Movimientos (actas)
     stmt = (
         select(
             MovimientoPromocion.fecha,
@@ -772,7 +830,6 @@ def get_auditoria_alumno(db: SessionDep, idAlumno: int) -> list[dict]:
     for r in rows:
         curso_origen = _fmt_curso(r.orig_nombre, r.orig_div, r.orig_ciclo)
         curso_dest = _fmt_curso(r.dest_nombre, r.dest_div, r.dest_ciclo) if r.dest_nombre else "—"
-
         out.append({
             "fecha": r.fecha,
             "accion": str(r.accion),
@@ -781,7 +838,6 @@ def get_auditoria_alumno(db: SessionDep, idAlumno: int) -> list[dict]:
             "idMovimiento": int(r.idMovimiento) if r.idMovimiento else None,
         })
 
-    # 2) Cambios de curso (desde inscriptos)
     stmt_cc = (
         select(Inscriptos, Curso)
         .join(Curso, Curso.idCurso == Inscriptos.idCurso)

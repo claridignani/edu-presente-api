@@ -13,15 +13,12 @@ if TYPE_CHECKING:
 
 class Alumno(AlumnoBase, table=True):
     idAlumno: int | None = Field(default=None, primary_key=True)
-
-    # ✅ MATRÍCULA REAL
-    # Cursos a los que el alumno está inscripto, independientemente de la asistencia
+    dni_hash: str = Field(default="", index=True, max_length=64)
     cursos: list["Curso"] = Relationship(
         back_populates="alumnos",
         link_model=Inscriptos
     )
 
-    # ✅ Responsables por parentesco
     responsables: list["Responsable"] = Relationship(
         back_populates="alumnos",
         link_model=Parentesco
