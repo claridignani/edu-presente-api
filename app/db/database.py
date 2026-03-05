@@ -28,5 +28,6 @@ def create_db_and_tables():
         import app.models.requisito
         import app.models.pase_salida
         import app.models.pase_entrada
+        import app.models.ciclo_lectivo
 
         SQLModel.metadata.create_all(engine)

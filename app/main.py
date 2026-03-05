@@ -25,6 +25,7 @@ from app.routers.invitacion_public import router as invitacion_public_router
 from app.routers.usuario_public import router as usuario_public_router
 from app.routers import requisitos
 from app.routers.pases import router as pases_router
+from app.routers.ciclo_lectivo import router as ciclo_lectivo_router
 from dotenv import load_dotenv
 load_dotenv()
 import logging
@@ -79,3 +80,4 @@ app.include_router(alertas_router, dependencies=auth_dep)
 app.include_router(ia_router, dependencies=auth_dep)
 app.include_router(requisitos.router, dependencies=auth_dep)
 app.include_router(pases_router, dependencies=auth_dep)
+app.include_router(ciclo_lectivo_router, dependencies=auth_dep)
