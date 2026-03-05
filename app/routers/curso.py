@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 from typing import Annotated, List
+from datetime import date as _date
 
 from fastapi import APIRouter, HTTPException, Query, Depends
+from sqlalchemy import func
 from sqlmodel import select
 
 from app.dependencies import SessionDep
 from app.dependencies.auth import get_current_user
 from app.models.usuario import Usuario
+from app.models.curso import Curso
+from app.models.curso_docente import CursoDocente
+from app.models.inscriptos import Inscriptos
 
 from app.models.rol import Rol
 from app.schemas.rol import RolDescripcion, RolEstado
@@ -42,7 +47,6 @@ router = APIRouter(prefix="/cursos", tags=["Cursos"])
 # Helpers de autorización
 # ==========================
 def _is_admin_global(session: SessionDep, user_id: int) -> bool:
-    # Admin "global": si tiene al menos un rol Administrador Activo en alguna escuela
     stmt = (
         select(Rol)
         .where(Rol.idUsuario == user_id)
@@ -53,7 +57,6 @@ def _is_admin_global(session: SessionDep, user_id: int) -> bool:
 
 
 def _require_access_to_cue(session: SessionDep, user_id: int, cue: str) -> None:
-    # Permite si tiene rol Activo en ese CUE (cualquier rol) o si es Administrador en ese CUE
     stmt = (
         select(Rol)
         .where(Rol.idUsuario == user_id)
@@ -68,14 +71,14 @@ def _require_access_to_cue(session: SessionDep, user_id: int, cue: str) -> None:
 # ==========================
 # Endpoints
 # ==========================
+
 @router.get("/", response_model=list[CursoPublic])
 def getAllCursos(
     session: SessionDep,
     offset: int = 0,
     limit: Annotated[int, Query(ge=1, le=100)] = 100,
-    current_user: Usuario = Depends(get_current_user),  # 🔒 protegido
+    current_user: Usuario = Depends(get_current_user),
 ):
-    # si querés que esto sea solo admin, lo cambiamos después
     return get_all_cursos(session, offset, limit)
 
 
@@ -92,20 +95,102 @@ def get_cursos_por_escuela(
     cue: str,
     session: SessionDep,
     cicloLectivo: str | None = None,
-    current_user: Usuario = Depends(get_current_user),  # 🔒 protegido
+    current_user: Usuario = Depends(get_current_user),
 ):
-    # 🔒 Solo usuarios con rol activo en esa escuela
     _require_access_to_cue(session, current_user.idUsuario, cue)
     return get_cursos_by_cue(session, cue, cicloLectivo)
+
+
+# ==========================
+# ✅ NUEVO — Resumen optimizado
+# Devuelve cursos + cantidad alumnos + docentes activos
+# en UNA sola respuesta (3 queries en lugar de N*3 requests)
+# IMPORTANTE: debe estar ANTES de /{idCurso} para que FastAPI
+# no interprete "resumen" como un idCurso numérico.
+# ==========================
+@router.get("/por-escuela/{cue}/resumen")
+def get_cursos_resumen(
+    cue: str,
+    session: SessionDep,
+    cicloLectivo: str | None = None,
+    current_user: Usuario = Depends(get_current_user),
+):
+    """
+    Endpoint optimizado para la vista de cursos del director.
+    Reemplaza las N llamadas individuales a:
+      - /alumnos/cursos/{id}        (cantidad alumnos)
+      - /cursos/{id}/docentes       (docentes del curso)
+      - /usuarios/{id}              (nombre de cada docente)
+    """
+    _require_access_to_cue(session, current_user.idUsuario, cue)
+
+    # 1) Cursos de la escuela filtrados por ciclo
+    stmt_cursos = select(Curso).where(Curso.CUE == cue)
+    if cicloLectivo:
+        stmt_cursos = stmt_cursos.where(Curso.cicloLectivo == cicloLectivo)
+    cursos = session.exec(stmt_cursos).all()
+
+    if not cursos:
+        return []
+
+    curso_ids = [c.idCurso for c in cursos]
+
+    # 2) Contar alumnos activos por curso — una sola query con GROUP BY
+    stmt_alumnos = (
+        select(Inscriptos.idCurso, func.count(Inscriptos.idAlumno).label("total"))
+        .where(
+            Inscriptos.idCurso.in_(curso_ids),
+            Inscriptos.activo == True,
+        )
+        .group_by(Inscriptos.idCurso)
+    )
+    counts_map: dict[int, int] = {
+        row.idCurso: row.total
+        for row in session.exec(stmt_alumnos).all()
+    }
+
+    # 3) Docentes activos de esos cursos — una sola query con JOIN
+    hoy = _date.today()
+    stmt_docentes = (
+        select(CursoDocente, Usuario)
+        .join(Usuario, CursoDocente.idUsuario == Usuario.idUsuario)
+        .where(
+            CursoDocente.idCurso.in_(curso_ids),
+            CursoDocente.estado == "Activo",
+            (CursoDocente.fechaDesde == None) | (CursoDocente.fechaDesde <= hoy),
+            (CursoDocente.fechaHasta == None) | (CursoDocente.fechaHasta >= hoy),
+        )
+    )
+    docentes_map: dict[int, list[dict]] = {}
+    for cd, u in session.exec(stmt_docentes).all():
+        docentes_map.setdefault(cd.idCurso, []).append({
+            "idUsuario": u.idUsuario,
+            "nombre":    u.nombre,
+            "apellido":  u.apellido,
+            "tipo":      cd.tipo or "Titular",
+        })
+
+    # 4) Armar y devolver respuesta
+    return [
+        {
+            "idCurso":         c.idCurso,
+            "nombre":          c.nombre,
+            "division":        c.division,
+            "turno":           c.turno,
+            "cicloLectivo":    c.cicloLectivo,
+            "cantidadAlumnos": counts_map.get(c.idCurso, 0),
+            "docentes":        docentes_map.get(c.idCurso, []),
+        }
+        for c in cursos
+    ]
 
 
 @router.post("/copiar-estructura", response_model=CopiarEstructuraCursosOut)
 def post_copiar_estructura(
     payload: CopiarEstructuraCursosIn,
     session: SessionDep,
-    current_user: Usuario = Depends(get_current_user),  # 🔒 protegido
+    current_user: Usuario = Depends(get_current_user),
 ):
-    # si esto debe ser Director/Admin, lo endurecemos después
     return copiar_estructura_cursos(db=session, payload=payload)
 
 
@@ -113,9 +198,8 @@ def post_copiar_estructura(
 def bulk_delete(
     payload: CursosBulkDeleteIn,
     session: SessionDep,
-    current_user: Usuario = Depends(get_current_user),  # 🔒 protegido
+    current_user: Usuario = Depends(get_current_user),
 ):
-    # si esto debe ser Director/Admin, lo endurecemos después
     return bulk_delete_cursos_director(
         db=session,
         cue=payload.cue,
@@ -129,10 +213,8 @@ def bulk_delete(
 def get_cursos_and_escuelas_by_usuario(
     idUsuario: int,
     session: SessionDep,
-    current_user: Usuario = Depends(get_current_user),  # 🔒 protegido
+    current_user: Usuario = Depends(get_current_user),
 ):
-    # 🔒 Un docente solo puede pedir "sus" cursos.
-    # Admin puede pedir los de cualquiera.
     if current_user.idUsuario != idUsuario and not _is_admin_global(session, current_user.idUsuario):
         raise HTTPException(status_code=403, detail="No autorizado")
 
@@ -141,7 +223,7 @@ def get_cursos_and_escuelas_by_usuario(
     agrupados: dict[str, EscuelaMiniConCursos] = {}
 
     for curso, escuela, cd in resultados:
-        cue = getattr(escuela, "CUE", None)
+        cue    = getattr(escuela, "CUE", None)
         nombre = getattr(escuela, "nombre", "") or ""
 
         if not cue:
@@ -162,7 +244,7 @@ def get_cursos_and_escuelas_by_usuario(
 def read_curso(
     idCurso: int,
     session: SessionDep,
-    current_user: Usuario = Depends(get_current_user),  # 🔒 protegido
+    current_user: Usuario = Depends(get_current_user),
 ):
     db_curso = get_one_curso(idCurso, session)
     if not db_curso:
@@ -175,7 +257,7 @@ def update_curso(
     idCurso: int,
     curso: CursoUpdate,
     session: SessionDep,
-    current_user: Usuario = Depends(get_current_user),  # 🔒 protegido
+    current_user: Usuario = Depends(get_current_user),
 ):
     db_curso = get_one_curso(idCurso, session)
     if not db_curso:
@@ -188,7 +270,7 @@ def update_curso(
 def delete_curso(
     idCurso: int,
     session: SessionDep,
-    current_user: Usuario = Depends(get_current_user),  # 🔒 protegido
+    current_user: Usuario = Depends(get_current_user),
 ):
     try:
         delete_one_curso(idCurso, session)
@@ -201,7 +283,7 @@ def delete_curso(
 def get_docentes_de_curso(
     idCurso: int,
     session: SessionDep,
-    current_user: Usuario = Depends(get_current_user),  # 🔒 protegido
+    current_user: Usuario = Depends(get_current_user),
 ):
     return listar_docentes_de_curso(session, idCurso)
 
@@ -210,7 +292,7 @@ def get_docentes_de_curso(
 def get_docentes_detalle_de_curso(
     idCurso: int,
     session: SessionDep,
-    current_user: Usuario = Depends(get_current_user),  # 🔒 protegido
+    current_user: Usuario = Depends(get_current_user),
 ):
     return listar_docentes_detalle_de_curso(session, idCurso)
 
@@ -221,6 +303,6 @@ def post_asignar_docente(
     payload: CursoDocenteCreate,
     director_id: int,
     session: SessionDep,
-    current_user: Usuario = Depends(get_current_user),  # 🔒 protegido
+    current_user: Usuario = Depends(get_current_user),
 ):
     return asignar_docente_a_curso(session, idCurso, director_id, payload)
