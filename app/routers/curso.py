@@ -4,7 +4,7 @@ from typing import Annotated, List
 from datetime import date as _date
 
 from fastapi import APIRouter, HTTPException, Query, Depends
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlmodel import select
 
 from app.dependencies import SessionDep

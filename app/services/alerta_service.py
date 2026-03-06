@@ -671,3 +671,60 @@ def stats_alertas_activas_por_escuela(
         )
 
     return out
+
+def get_historial_alertas_por_alumno(
+    db: SessionDep,
+    idAlumno: int,
+    cue: str,
+) -> list:
+    """
+    Devuelve todas las alertas de un alumno en una escuela,
+    con conteo de intervenciones por alerta. Usado para detectar patrones en IA.
+    """
+    from app.schemas.alerta import AlertaResumenAlumno
+    from sqlalchemy import func
+
+    # Subquery: contar intervenciones por alerta
+    sub_intervenciones = (
+        select(
+            Intervencion.idAlerta.label("idAlerta"),
+            func.count(Intervencion.idIntervencion).label("total"),
+        )
+        .group_by(Intervencion.idAlerta)
+        .subquery()
+    )
+
+    stmt = (
+        select(
+            Alerta,
+            Curso.nombre.label("cursoNombre"),
+            Curso.division,
+            sub_intervenciones.c.total.label("totalIntervenciones"),
+        )
+        .join(Curso, Curso.idCurso == Alerta.idCurso)
+        .outerjoin(sub_intervenciones, sub_intervenciones.c.idAlerta == Alerta.idAlerta)
+        .where(
+            and_(
+                Alerta.idAlumno == idAlumno,
+                Alerta.cue == cue,
+            )
+        )
+        .order_by(desc(Alerta.created_at))
+    )
+
+    rows = db.exec(stmt).all()
+
+    return [
+        AlertaResumenAlumno(
+            idAlerta=int(alerta.idAlerta),
+            motivo=alerta.motivo,
+            estado=alerta.estado,
+            fechaCreacion=alerta.created_at,
+            curso=f"{cursoNombre} {division}".strip(),
+            consecutivas=int(alerta.consecutivas),
+            totalIntervenciones=int(totalIntervenciones or 0),
+            resuelta=alerta.estado == EstadoAlerta.RESUELTO,
+            archivada=bool(alerta.archivada),
+        )
+        for alerta, cursoNombre, division, totalIntervenciones in rows
+    ]

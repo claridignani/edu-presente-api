@@ -8,7 +8,6 @@ from sqlmodel import SQLModel, Field
 
 from app.models.alerta import EstadoAlerta, MotivoAlerta
 
-
 class AlertaListItem(SQLModel):
     idAlerta: int
     cue: str
@@ -57,3 +56,15 @@ class AlertaCreate(SQLModel):
     consecutivas: Optional[int] = 0
     fechaInicioRacha: Optional[date] = None
     fechaFinRacha: Optional[date] = None
+
+class AlertaResumenAlumno(SQLModel):
+    """Resumen de una alerta para el historial del alumno."""
+    idAlerta: int
+    motivo: MotivoAlerta
+    estado: EstadoAlerta
+    fechaCreacion: datetime
+    curso: str
+    consecutivas: int
+    totalIntervenciones: int
+    resuelta: bool
+    archivada: bool

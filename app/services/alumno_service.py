@@ -705,80 +705,14 @@ def get_alumnos_historial_por_ciclo(
             )
         )
 
-    if not solo_activos:
-        stmt_pre = (
-            select(Alumno, Responsable, Parentesco.parentesco)
-            .join(Preinscripcion, Preinscripcion.idAlumno == Alumno.idAlumno)
-            .outerjoin(sub_resp, sub_resp.c.idAlumno == Alumno.idAlumno)
-            .outerjoin(Responsable, Responsable.idResponsable == sub_resp.c.idResponsable)
-            .outerjoin(
-                Parentesco,
-                (Parentesco.idAlumno == Alumno.idAlumno)
-                & (Parentesco.idResponsable == sub_resp.c.idResponsable),
-            )
-            .where(Preinscripcion.CUE == cue)
-            .where(Preinscripcion.cicloLectivo == ciclo_lectivo)
-            .where(Preinscripcion.estado == "Pendiente")
-        )
-
-        if q:
-            q_clean = q.strip()
-            term = f"%{q_clean}%"
-            if q_clean.isdigit():
-                dni_hash_q = hash_for_search(q_clean)
-                stmt_pre = stmt_pre.where(
-                    or_(
-                        Alumno.nombre.ilike(term),
-                        Alumno.apellido.ilike(term),
-                        Alumno.dni_hash == dni_hash_q,
-                    )
-                )
-            else:
-                stmt_pre = stmt_pre.where(
-                    or_(
-                        Alumno.nombre.ilike(term),
-                        Alumno.apellido.ilike(term),
-                    )
-                )
-
-        for alumno, resp, parentesco in db.exec(stmt_pre).all():
-            if int(alumno.idAlumno) in ids_incluidos:
-                continue
-
-            responsable_public = None
-            if resp:
-                responsable_public = ResponsableMiniPublic(
-                    idResponsable=int(resp.idResponsable),
-                    nombre=str(resp.nombre),
-                    apellido=str(resp.apellido),
-                    parentesco=parentesco,
-                    nro_celular=getattr(resp, "nro_celular", None),
-                    email=getattr(resp, "email", None),
-                    direccion=decrypt(resp.direccion) if getattr(resp, "direccion", None) else None,
-                )
-
-            items.append(
-                AlumnoCicloRow(
-                    idAlumno=int(alumno.idAlumno),
-                    nombre=str(alumno.nombre),
-                    apellido=str(alumno.apellido),
-                    dni=decrypt(alumno.dni) if alumno.dni else str(alumno.dni),
-                    idCurso=0,
-                    nombreCurso="Sin asignar",
-                    idCursoActual=None,
-                    cursoActualNombre=None,
-                    estadoAlumno=str(getattr(alumno, "estado", "Activo") or "Activo"),
-                    activoInscripcion=False,
-                    estadoInscripcion=EstadoInscripcion.Activo,
-                    responsable=responsable_public,
-                )
-            )
+    # ── Los preinscriptos NO forman parte de la matrícula ──────────────────
+    # Solo se muestran en una vista separada de preinscripción.
+    # El total y los items paginados reflejan únicamente inscriptos reales.
 
     items.sort(key=lambda x: ((x.apellido or "").lower(), (x.nombre or "").lower()))
     total = len(items)
     paged = items[offset: offset + limit]
     return AlumnoCicloPage(total=total, items=paged)
-
 
 # ==============================================================
 # BUSCAR POR DNI

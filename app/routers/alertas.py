@@ -12,7 +12,7 @@ from app.models.usuario import Usuario
 from app.models.alerta import EstadoAlerta
 
 from app.schemas.rol import RolDescripcion
-from app.schemas.alerta import AlertaListItem, AlertaPatch, AlertaCreate
+from app.schemas.alerta import AlertaListItem, AlertaPatch, AlertaCreate, AlertaResumenAlumno
 from app.schemas.intervencion import IntervencionCreate, IntervencionPublic
 
 from app.services.alerta_service import (
@@ -22,6 +22,7 @@ from app.services.alerta_service import (
     list_intervenciones,
     create_alerta,
     stats_alertas_activas_por_escuela,
+    get_historial_alertas_por_alumno,
 )
 
 router = APIRouter(prefix="/alertas", tags=["Alertas"])
@@ -123,4 +124,16 @@ def get_alertas_riesgo(
         hasta=hasta,
         curso_ids=cursoIds,
     )
-# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/alumno/{idAlumno}", response_model=list[AlertaResumenAlumno])
+def get_historial_alumno(
+    idAlumno: int,
+    session: SessionDep,
+    cue: str = Query(...),
+    current_user: Usuario = Depends(require_access_to_cue_param(ALLOWED_ALERTAS)),
+):
+    """
+    Devuelve todas las alertas de un alumno en una escuela con conteo de
+    intervenciones. Usado por el generador de informes IA para detectar patrones.
+    """
+    return get_historial_alertas_por_alumno(db=session, idAlumno=idAlumno, cue=cue)
