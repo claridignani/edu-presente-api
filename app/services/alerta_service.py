@@ -671,20 +671,14 @@ def stats_alertas_activas_por_escuela(
         )
 
     return out
-
 def get_historial_alertas_por_alumno(
     db: SessionDep,
     idAlumno: int,
     cue: str,
 ) -> list:
-    """
-    Devuelve todas las alertas de un alumno en una escuela,
-    con conteo de intervenciones por alerta. Usado para detectar patrones en IA.
-    """
     from app.schemas.alerta import AlertaResumenAlumno
     from sqlalchemy import func
 
-    # Subquery: contar intervenciones por alerta
     sub_intervenciones = (
         select(
             Intervencion.idAlerta.label("idAlerta"),
@@ -728,3 +722,78 @@ def get_historial_alertas_por_alumno(
         )
         for alerta, cursoNombre, division, totalIntervenciones in rows
     ]
+
+
+def list_alertas_docente(
+    db: SessionDep,
+    cue: str,
+    docente_id: int,
+    archivadas: bool = False,
+) -> list[AlertaListItem]:
+    motivos_permitidos = [
+        MotivoAlerta.PEDAGOGICO,
+        MotivoAlerta.SALUD,
+        MotivoAlerta.CONDUCTA,
+    ]
+
+    has_created_by = (
+        hasattr(Alerta, "created_by") and
+        "created_by" in Alerta.__table__.columns
+    )
+
+    conditions = [
+        Alerta.cue == cue,
+        Alerta.idAlumno == Alumno.idAlumno,
+        Alerta.idCurso == Curso.idCurso,
+        Alerta.motivo.in_(motivos_permitidos),
+    ]
+
+    if has_created_by:
+        conditions.append(Alerta.created_by == docente_id)
+
+    stmt = (
+        select(
+            Alerta,
+            Alumno.nombre,
+            Alumno.apellido,
+            Alumno.dni,
+            Curso.nombre.label("cursoNombre"),
+            Curso.division,
+            Curso.cicloLectivo,
+        )
+        .select_from(Alerta, Alumno, Curso)
+        .where(and_(*conditions))
+        .order_by(desc(Alerta.created_at), desc(Alerta.idAlerta))
+    )
+
+    if not archivadas:
+        stmt = stmt.where(Alerta.archivada.is_(False))
+    else:
+        stmt = stmt.where(Alerta.archivada.is_(True))
+
+    rows = db.exec(stmt).all()
+
+    out: list[AlertaListItem] = []
+    for alerta, nom, ape, dni, cursoNom, div, ciclo in rows:
+        curso_str = f"{cursoNom} {div} ({ciclo})".strip()
+        out.append(
+            AlertaListItem(
+                idAlerta=int(alerta.idAlerta),
+                cue=alerta.cue,
+                idAlumno=int(alerta.idAlumno),
+                alumnoNombre=f"{ape}, {nom}",
+                alumnoDni=decrypt(dni) if dni else None,
+                idCurso=int(alerta.idCurso),
+                created_at=alerta.created_at,
+                curso=curso_str,
+                motivo=alerta.motivo,
+                consecutivas=int(alerta.consecutivas),
+                fechaInicioRacha=alerta.fechaInicioRacha,
+                fechaFinRacha=alerta.fechaFinRacha,
+                estado=alerta.estado,
+                ultimaAccionAt=alerta.ultimaAccionAt,
+                archivada=bool(alerta.archivada),
+                detalle=getattr(alerta, "detalle", None),
+            )
+        )
+    return out

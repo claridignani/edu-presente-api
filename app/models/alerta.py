@@ -19,12 +19,13 @@ class EstadoAlerta(str, Enum):
 
 class MotivoAlerta(str, Enum):
     INASISTENCIAS_CONSECUTIVAS = "INASISTENCIAS_CONSECUTIVAS"
-    INASISTENCIAS_REITERADAS = "INASISTENCIAS_REITERADAS"
-    LLEGADAS_TARDE = "LLEGADAS_TARDE"
-    CONDUCTA = "CONDUCTA"
-    SALUD = "SALUD"
-    FAMILIAR = "FAMILIAR"
-    OTRO = "OTRO"
+    INASISTENCIAS_REITERADAS   = "INASISTENCIAS_REITERADAS"
+    LLEGADAS_TARDE             = "LLEGADAS_TARDE"
+    CONDUCTA                   = "CONDUCTA"
+    SALUD                      = "SALUD"
+    FAMILIAR                   = "FAMILIAR"
+    PEDAGOGICO                 = "PEDAGOGICO"
+    OTRO                       = "OTRO"
 
 
 def enum_values(enum_cls):
@@ -36,11 +37,18 @@ class Alerta(SQLModel, table=True):
 
     idAlerta: Optional[int] = Field(default=None, primary_key=True)
 
-    # ✅ ideal: FK a escuela.CUE para asegurar integridad referencial
     cue: str = Field(foreign_key="escuela.CUE", max_length=20, nullable=False, index=True)
 
-    idCurso: int = Field(foreign_key="curso.idCurso", index=True, nullable=False)
+    idCurso:  int = Field(foreign_key="curso.idCurso",   index=True, nullable=False)
     idAlumno: int = Field(foreign_key="alumno.idAlumno", index=True, nullable=False)
+
+    # ✅ FK al usuario que creó la alerta — necesario para filtrar alertas del docente
+    created_by: Optional[int] = Field(
+        default=None,
+        foreign_key="usuario.idUsuario",
+        index=True,
+        nullable=True,
+    )
 
     motivo: MotivoAlerta = Field(
         sa_column=Column(
@@ -68,18 +76,16 @@ class Alerta(SQLModel, table=True):
         default=EstadoAlerta.PENDIENTE,
     )
 
-    # Si la creás manualmente puede no ser 3; en automática tal vez sí.
     consecutivas: int = Field(default=0, nullable=False)
 
-    # ✅ mejor permitir null si hay alertas manuales sin racha
     fechaInicioRacha: Optional[date] = Field(default=None)
-    fechaFinRacha: Optional[date] = Field(default=None)
+    fechaFinRacha:    Optional[date] = Field(default=None)
 
     archivada: bool = Field(default=False, index=True, nullable=False)
     detalle: Optional[str] = Field(default=None, max_length=500)
 
     ultimaAccionAt: Optional[datetime] = Field(default=None)
-    resueltaAt: Optional[datetime] = Field(default=None)
+    resueltaAt:     Optional[datetime] = Field(default=None)
 
     created_at: datetime = Field(
         sa_column=Column(DateTime, nullable=False, server_default=text("CURRENT_TIMESTAMP"))
