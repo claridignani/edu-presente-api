@@ -1,6 +1,7 @@
 from datetime import date
 from sqlmodel import SQLModel, Field
 from typing import Optional
+from pydantic import BaseModel
 
 class CursoDocenteCreate(SQLModel):
     idUsuario: int
@@ -26,3 +27,6 @@ class CursoDocenteDetalle(SQLModel):
     fechaHasta: Optional[date] = None
     estado: str
 
+class ActualizarFechasSuplenciaIn(BaseModel):
+    fechaDesde: Optional[date] = None
+    fechaHasta: Optional[date] = None

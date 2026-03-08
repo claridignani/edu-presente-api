@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from typing import Annotated, List
-from datetime import date as _date
+from datetime import date as _date, timedelta
 
 from fastapi import APIRouter, HTTPException, Query, Depends
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, and_
 from sqlmodel import select
 
 from app.dependencies import SessionDep
@@ -19,7 +19,7 @@ from app.schemas.rol import RolDescripcion, RolEstado
 
 from app.schemas.curso import CursoPublic, CursoUpdate, CursoAsignadoPublic
 from app.schemas.escuela import EscuelaMiniConCursos
-from app.schemas.curso_docente import CursoDocenteCreate, CursoDocentePublic, CursoDocenteDetalle
+from app.schemas.curso_docente import CursoDocenteCreate, CursoDocentePublic, CursoDocenteDetalle, ActualizarFechasSuplenciaIn
 from app.schemas.cursos_admin import CopiarEstructuraCursosIn, CopiarEstructuraCursosOut
 from app.services.curso_service import copiar_estructura_cursos
 from app.schemas.curso import CursosBulkDeleteIn, CursosBulkDeleteOut
@@ -41,6 +41,7 @@ from app.services.curso_service import (
 )
 
 router = APIRouter(prefix="/cursos", tags=["Cursos"])
+
 
 
 # ==========================
@@ -238,6 +239,73 @@ def get_cursos_and_escuelas_by_usuario(
         )
 
     return list(agrupados.values())
+
+@router.get("/por-escuela/{cue}/novedades-docentes")
+def get_novedades_docentes(
+    cue: str,
+    session: SessionDep,
+    current_user: Usuario = Depends(get_current_user),
+):
+    _require_access_to_cue(session, current_user.idUsuario, cue)
+    
+    hoy = _date.today()
+
+    stmt = (
+        select(
+            CursoDocente.tipo,
+            CursoDocente.fechaDesde,
+            CursoDocente.fechaHasta,
+            Usuario.nombre,
+            Usuario.apellido,
+            Curso.nombre.label("cursoNombre"),
+            Curso.division,
+        )
+        .join(Usuario, Usuario.idUsuario == CursoDocente.idUsuario)
+        .join(Curso, Curso.idCurso == CursoDocente.idCurso)
+        .where(
+            Curso.CUE == cue,
+            CursoDocente.estado == "Activo",
+            CursoDocente.tipo == "Suplente",
+        )
+        .order_by(CursoDocente.tipo, CursoDocente.fechaDesde)
+    )
+
+    rows = session.exec(stmt).all()
+
+    return [
+        {
+            "tipo": r[0],
+            "fechaDesde": r[1],
+            "fechaHasta": r[2],
+            "nombre": f"{r[3]} {r[4]}",
+            "curso": f"{r[5]} {r[6] or ''}".strip(),
+        }
+        for r in rows
+    ]
+
+@router.patch("/{idCurso}/docentes/{idUsuario}/fechas")
+def patch_fechas_suplencia(
+    idCurso: int,
+    idUsuario: int,
+    payload: ActualizarFechasSuplenciaIn,
+    session: SessionDep,
+    current_user: Usuario = Depends(get_current_user),
+):
+    asignacion = session.get(CursoDocente, (idCurso, idUsuario))
+    if not asignacion:
+        raise HTTPException(status_code=404, detail="Asignación no encontrada")
+    if asignacion.tipo != "Suplente":
+        raise HTTPException(status_code=400, detail="Solo se pueden editar fechas de suplentes")
+
+    if payload.fechaDesde is not None:
+        asignacion.fechaDesde = payload.fechaDesde
+    if payload.fechaHasta is not None:
+        asignacion.fechaHasta = payload.fechaHasta
+
+    session.add(asignacion)
+    session.commit()
+    session.refresh(asignacion)
+    return {"ok": True, "fechaDesde": asignacion.fechaDesde, "fechaHasta": asignacion.fechaHasta}
 
 
 @router.get("/{idCurso}", response_model=CursoPublic)

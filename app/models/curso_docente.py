@@ -1,4 +1,5 @@
 from datetime import date
+from typing import Optional
 from sqlmodel import SQLModel, Field
 
 class CursoDocente(SQLModel, table=True):

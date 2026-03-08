@@ -1,7 +1,6 @@
 # app/routers/asistencia.py
 from datetime import date
 from typing import Annotated, Optional
-from sqlalchemy import func, select
 
 from fastapi import APIRouter, HTTPException, Query, Depends
 
@@ -22,7 +21,7 @@ from app.services.asistencia_service import (
     stats_lluvia_comparativo,
     alertas_inasistencias_consecutivas,
     stats_dias_semana,
-    stats_alumnos_por_rango,          # ← NUEVO
+    stats_alumnos_por_rango,      
     upsert_asistencias_por_curso_fecha,
     upsert_asistencias_por_curso_rango
 )
@@ -31,16 +30,6 @@ from app.schemas.asistencia_bulk_curso import AsistenciaCursoFechaBulkRequest, A
 from app.dependencies.auth import get_current_user
 from app.models.usuario import Usuario
 router = APIRouter(prefix="/asistencias", tags=["Asistencias"])
-
-@router.get("/debug/ping-db")
-def ping_db(session: SessionDep):
-    import time
-    tiempos = []
-    for _ in range(5):
-        t = time.time()
-        session.exec(select(func.now()))
-        tiempos.append(round((time.time() - t) * 1000, 2))
-    return {"latencias_ms": tiempos, "promedio_ms": round(sum(tiempos)/len(tiempos), 2)}
 
 
 # ==========================
