@@ -150,16 +150,30 @@ def get_all_alumnos(db: SessionDep, offset: int, limit: Annotated[int, Query(le=
 # ==============================================================
 
 def get_alumnos_detalle_by_curso(idCurso: int, db: SessionDep, solo_activos: bool = True):
+    sub_resp = (
+        select(
+            Parentesco.idAlumno.label("idAlumno"),
+            func.min(Parentesco.idResponsable).label("idResponsable"),
+        )
+        .group_by(Parentesco.idAlumno)
+        .subquery()
+    )
+
     stmt = (
         select(Alumno, Responsable, Parentesco.parentesco)
         .join(Inscriptos, Inscriptos.idAlumno == Alumno.idAlumno)
-        .outerjoin(Parentesco, Parentesco.idAlumno == Alumno.idAlumno)
-        .outerjoin(Responsable, Responsable.idResponsable == Parentesco.idResponsable)
+        .outerjoin(sub_resp, sub_resp.c.idAlumno == Alumno.idAlumno)
+        .outerjoin(Responsable, Responsable.idResponsable == sub_resp.c.idResponsable)
+        .outerjoin(
+            Parentesco,
+            (Parentesco.idAlumno == Alumno.idAlumno)
+            & (Parentesco.idResponsable == sub_resp.c.idResponsable),
+        )
         .where(Inscriptos.idCurso == idCurso)
     )
 
     if solo_activos:
-        stmt = stmt.where(Inscriptos.activo == True)
+        stmt = stmt.where(Inscriptos.activo == True)  # noqa: E712
 
     rows = db.exec(stmt).all()
     alumnos_map = {}
