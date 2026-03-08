@@ -101,6 +101,8 @@ def upsert_asistencia(db: SessionDep, payload: AsistenciaCreate) -> Asistencia:
 # Bulk Upsert
 # ==========================
 
+import time
+
 def upsert_asistencias_bulk(db: SessionDep, payloads: list[AsistenciaCreate]) -> list[Asistencia]:
     if not payloads:
         return []
@@ -108,13 +110,24 @@ def upsert_asistencias_bulk(db: SessionDep, payloads: list[AsistenciaCreate]) ->
     cursos_ids = list({p.idCurso for p in payloads})
     for cid in cursos_ids:
         ensure_curso_exists(db, cid)
-
     ensure_alumnos_exist(db, [p.idAlumno for p in payloads])
 
-    out: list[Asistencia] = []
+    fecha = payloads[0].fecha
+    alumno_ids = [p.idAlumno for p in payloads]
+    existentes_map = {
+        (r.idCurso, r.idAlumno): r
+        for r in db.exec(
+            select(Asistencia).where(
+                Asistencia.idCurso.in_(cursos_ids),
+                Asistencia.idAlumno.in_(alumno_ids),
+                Asistencia.fecha == fecha,
+            )
+        ).all()
+    }
 
+    out: list[Asistencia] = []
     for p in payloads:
-        existente = get_one_asistencia(db, p.idCurso, p.idAlumno, p.fecha)
+        existente = existentes_map.get((p.idCurso, p.idAlumno))
         if existente:
             existente.estado = p.estado
             existente.lluvia = p.lluvia
@@ -126,15 +139,14 @@ def upsert_asistencias_bulk(db: SessionDep, payloads: list[AsistenciaCreate]) ->
             out.append(nueva)
 
     db.commit()
-    for row in out:
-        db.refresh(row)
-    any_row = out[0]
+
     check_y_crear_alertas_consecutivas_para_curso_fecha(
-        db=db, idCurso=any_row.idCurso, fecha=any_row.fecha, min_consecutivas=3
+        db=db, idCurso=out[0].idCurso, fecha=out[0].fecha, min_consecutivas=3
     )
     check_y_crear_alertas_tardanzas_para_curso_fecha(
-        db=db, idCurso=any_row.idCurso, fecha=any_row.fecha, umbral=3
+        db=db, idCurso=out[0].idCurso, fecha=out[0].fecha, umbral=3
     )
+
     return out
 
 

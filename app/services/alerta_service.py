@@ -175,10 +175,7 @@ def _ya_existe_alerta_activa_motivo(db: SessionDep, cue: str, idCurso: int, idAl
 # Generación automática
 # -----------------------------
 def check_y_crear_alertas_consecutivas_para_curso_fecha(
-    db: SessionDep,
-    idCurso: int,
-    fecha: date,
-    min_consecutivas: int = 3,
+    db, idCurso, fecha, min_consecutivas=3
 ):
     curso = db.get(Curso, idCurso)
     if not curso:
@@ -188,64 +185,80 @@ def check_y_crear_alertas_consecutivas_para_curso_fecha(
     ult_fechas = _ultimas_fechas_clase(db, idCurso=idCurso, hasta=fecha, n=min_consecutivas)
     if len(ult_fechas) < min_consecutivas:
         return
-
     ult_fechas_sorted = sorted(ult_fechas)
 
-    stmt_ausentes_hoy = (
-        select(Asistencia.idAlumno)
-        .where(and_(Asistencia.idCurso == idCurso, Asistencia.fecha == fecha, Asistencia.estado == "Ausente"))
-    )
-    candidatos = [int(x) for x in db.exec(stmt_ausentes_hoy).all()]
+    candidatos = [
+        int(x) for x in db.exec(
+            select(Asistencia.idAlumno).where(
+                Asistencia.idCurso == idCurso,
+                Asistencia.fecha == fecha,
+                Asistencia.estado == "Ausente",
+            )
+        ).all()
+    ]
     if not candidatos:
         return
 
-    for idAlumno in candidatos:
-        insc = _inscripcion_activa_para_fecha(db, idCurso, idAlumno, fecha)
-        if not insc:
-            continue
-
-        if _ya_existe_alerta_activa(db, cue, idCurso, idAlumno):
-            continue
-
-        stmt_check = (
-            select(func.count())
-            .select_from(Asistencia)
-            .where(
-                and_(
-                    Asistencia.idCurso == idCurso,
-                    Asistencia.idAlumno == idAlumno,
-                    Asistencia.fecha.in_(ult_fechas_sorted),
-                    Asistencia.estado == "Ausente",
-                )
+    insc_set = set(
+        int(x) for x in db.exec(
+            select(Inscriptos.idAlumno).where(
+                Inscriptos.idCurso == idCurso,
+                Inscriptos.idAlumno.in_(candidatos),
+                Inscriptos.activo.is_(True),
             )
+        ).all()
+    )
+
+    alertas_existentes = set(
+        int(x) for x in db.exec(
+            select(Alerta.idAlumno).where(
+                Alerta.cue == cue,
+                Alerta.idCurso == idCurso,
+                Alerta.idAlumno.in_(candidatos),
+                Alerta.motivo == MotivoAlerta.INASISTENCIAS_CONSECUTIVAS,
+                Alerta.estado != EstadoAlerta.RESUELTO,
+                Alerta.archivada.is_(False),
+            )
+        ).all()
+    )
+
+    rows_cnt = db.exec(
+        select(Asistencia.idAlumno, func.count().label("cnt"))
+        .where(
+            Asistencia.idCurso == idCurso,
+            Asistencia.idAlumno.in_(candidatos),
+            Asistencia.fecha.in_(ult_fechas_sorted),
+            Asistencia.estado == "Ausente",
         )
-        cnt = int(db.exec(stmt_check).one() or 0)
+        .group_by(Asistencia.idAlumno)
+    ).all()
+    conteo_map = {int(r.idAlumno): int(r.cnt) for r in rows_cnt}
 
-        if cnt == min_consecutivas:
-            alerta = Alerta(
-                cue=cue,
-                idCurso=idCurso,
-                idAlumno=idAlumno,
-                motivo=MotivoAlerta.INASISTENCIAS_CONSECUTIVAS,
-                estado=EstadoAlerta.PENDIENTE,
-                consecutivas=min_consecutivas,
-                fechaInicioRacha=ult_fechas_sorted[0],
-                fechaFinRacha=ult_fechas_sorted[-1],
-                archivada=False,
-            )
-            now = datetime.utcnow()
-            alerta.created_at = now
-            alerta.ultimaAccionAt = now
-            db.add(alerta)
+    now = datetime.utcnow()
+    for idAlumno in candidatos:
+        if idAlumno not in insc_set:
+            continue
+        if idAlumno in alertas_existentes:
+            continue
+        if conteo_map.get(idAlumno, 0) != min_consecutivas:
+            continue
+        db.add(Alerta(
+            cue=cue, idCurso=idCurso, idAlumno=idAlumno,
+            motivo=MotivoAlerta.INASISTENCIAS_CONSECUTIVAS,
+            estado=EstadoAlerta.PENDIENTE,
+            consecutivas=min_consecutivas,
+            fechaInicioRacha=ult_fechas_sorted[0],
+            fechaFinRacha=ult_fechas_sorted[-1],
+            archivada=False,
+            created_at=now,
+            ultimaAccionAt=now,
+        ))
 
     db.commit()
 
 
 def check_y_crear_alertas_tardanzas_para_curso_fecha(
-    db: SessionDep,
-    idCurso: int,
-    fecha: date,
-    umbral: int = 3,
+    db, idCurso, fecha, umbral=3
 ):
     curso = db.get(Curso, idCurso)
     if not curso:
@@ -256,74 +269,79 @@ def check_y_crear_alertas_tardanzas_para_curso_fecha(
     desde = date(int(anio), 1, 1)
     hasta = date(int(anio), 12, 31)
 
-    stmt_tarde_hoy = (
-        select(Asistencia.idAlumno)
-        .where(and_(Asistencia.idCurso == idCurso, Asistencia.fecha == fecha, Asistencia.estado == "Tarde"))
-    )
-    candidatos = [int(x) for x in db.exec(stmt_tarde_hoy).all()]
+    candidatos = [
+        int(x) for x in db.exec(
+            select(Asistencia.idAlumno).where(
+                Asistencia.idCurso == idCurso,
+                Asistencia.fecha == fecha,
+                Asistencia.estado == "Tarde",
+            )
+        ).all()
+    ]
     if not candidatos:
         return
 
-    for idAlumno in candidatos:
-        insc = _inscripcion_activa_para_fecha(db, idCurso, idAlumno, fecha)
-        if not insc:
-            continue
-
-        if _ya_existe_alerta_activa_motivo(db, cue, idCurso, idAlumno, MotivoAlerta.LLEGADAS_TARDE):
-            continue
-
-        stmt_cnt = (
-            select(func.count())
-            .select_from(Asistencia)
-            .where(
-                and_(
-                    Asistencia.idCurso == idCurso,
-                    Asistencia.idAlumno == idAlumno,
-                    Asistencia.fecha >= desde,
-                    Asistencia.fecha <= hasta,
-                    Asistencia.estado == "Tarde",
-                )
+    insc_set = set(
+        int(x) for x in db.exec(
+            select(Inscriptos.idAlumno).where(
+                Inscriptos.idCurso == idCurso,
+                Inscriptos.idAlumno.in_(candidatos),
+                Inscriptos.activo.is_(True),
             )
-        )
-        cnt = int(db.exec(stmt_cnt).one() or 0)
+        ).all()
+    )
 
+    alertas_existentes = set(
+        int(x) for x in db.exec(
+            select(Alerta.idAlumno).where(
+                Alerta.cue == cue,
+                Alerta.idCurso == idCurso,
+                Alerta.idAlumno.in_(candidatos),
+                Alerta.motivo == MotivoAlerta.LLEGADAS_TARDE,
+                Alerta.estado != EstadoAlerta.RESUELTO,
+                Alerta.archivada.is_(False),
+            )
+        ).all()
+    )
+
+    rows_tard = db.exec(
+        select(
+            Asistencia.idAlumno,
+            func.count().label("cnt"),
+            func.min(Asistencia.fecha).label("minf"),
+            func.max(Asistencia.fecha).label("maxf"),
+        )
+        .where(
+            Asistencia.idCurso == idCurso,
+            Asistencia.idAlumno.in_(candidatos),
+            Asistencia.fecha >= desde,
+            Asistencia.fecha <= hasta,
+            Asistencia.estado == "Tarde",
+        )
+        .group_by(Asistencia.idAlumno)
+    ).all()
+    tardes_map = {int(r.idAlumno): (int(r.cnt), r.minf, r.maxf) for r in rows_tard}
+
+    now = datetime.utcnow()
+    for idAlumno in candidatos:
+        if idAlumno not in insc_set:
+            continue
+        if idAlumno in alertas_existentes:
+            continue
+        cnt, fecha_ini, fecha_fin = tardes_map.get(idAlumno, (0, fecha, fecha))
         if cnt <= umbral:
             continue
-
-        stmt_minmax = (
-            select(
-                func.min(Asistencia.fecha).label("minf"),
-                func.max(Asistencia.fecha).label("maxf"),
-            )
-            .where(
-                and_(
-                    Asistencia.idCurso == idCurso,
-                    Asistencia.idAlumno == idAlumno,
-                    Asistencia.fecha >= desde,
-                    Asistencia.fecha <= hasta,
-                    Asistencia.estado == "Tarde",
-                )
-            )
-        )
-        r = db.exec(stmt_minmax).one()
-        fecha_ini = r.minf or fecha
-        fecha_fin = r.maxf or fecha
-
-        alerta = Alerta(
-            cue=cue,
-            idCurso=idCurso,
-            idAlumno=idAlumno,
+        db.add(Alerta(
+            cue=cue, idCurso=idCurso, idAlumno=idAlumno,
             motivo=MotivoAlerta.LLEGADAS_TARDE,
             estado=EstadoAlerta.PENDIENTE,
             consecutivas=cnt,
-            fechaInicioRacha=fecha_ini,
-            fechaFinRacha=fecha_fin,
+            fechaInicioRacha=fecha_ini or fecha,
+            fechaFinRacha=fecha_fin or fecha,
             archivada=False,
-        )
-        now = datetime.utcnow()
-        alerta.created_at = now
-        alerta.ultimaAccionAt = now
-        db.add(alerta)
+            created_at=now,
+            ultimaAccionAt=now,
+        ))
 
     db.commit()
 
@@ -797,3 +815,4 @@ def list_alertas_docente(
             )
         )
     return out
+
