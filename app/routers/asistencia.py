@@ -45,7 +45,8 @@ def _to_read(r) -> AsistenciaRead:
         estado=r.estado,
         lluvia=r.lluvia,
         wamid=r.wamid,
-        motivo_ausencia=r.motivo_ausencia,  # ← el campo que faltaba
+        motivo_ausencia=r.motivo_ausencia,
+        certificado_path=r.certificado_path,
     )
 
 

@@ -1,9 +1,28 @@
+from collections import OrderedDict
+
 from fastapi import APIRouter, Response, Query, Request
 from app.core.config import VERIFY_TOKEN
 from app.dependencies import SessionDep
-from app.services.whatsapp_service import procesar_respuesta_padre
+from app.services.whatsapp_service import procesar_respuesta_padre, procesar_imagen_certificado
 
 router = APIRouter(prefix="/webhook", tags=["Webhook"])
+
+# ── Deduplicación de webhooks ──────────────────────────────────
+# Meta puede enviar el mismo evento varias veces.
+# Guardamos los últimos message IDs procesados para ignorar duplicados.
+_MAX_PROCESSED = 1000
+_processed_ids: OrderedDict[str, None] = OrderedDict()
+
+
+def _already_processed(msg_id: str) -> bool:
+    """Devuelve True si el mensaje ya fue procesado. Si no, lo registra."""
+    if msg_id in _processed_ids:
+        return True
+    _processed_ids[msg_id] = None
+    if len(_processed_ids) > _MAX_PROCESSED:
+        _processed_ids.popitem(last=False)  # elimina el más antiguo
+    return False
+
 
 @router.get("/whatsapp")
 async def verificar_webhook(
@@ -69,17 +88,36 @@ async def recibir_respuesta_padre(request: Request, session: SessionDep):
             
             if "messages" in value:
                 mensaje = value["messages"][0]
+                msg_id = mensaje.get("id", "")
+
+                # Deduplicar: Meta puede enviar el mismo webhook varias veces
+                if _already_processed(msg_id):
+                    return Response(status_code=200)
+
+                telefono = mensaje.get("from", "")
+                tipo = mensaje.get("type")
                 
-                if mensaje.get("type") == "button":
+                # Botón de motivo (Enfermedad, Viaje, etc.)
+                if tipo == "button":
                     motivo_seleccionado = mensaje["button"]["payload"]
                     wamid_original = mensaje.get("context", {}).get("id")
                     
                     if wamid_original:
                         await procesar_respuesta_padre(
                             wamid=wamid_original, 
-                            motivo=motivo_seleccionado, 
+                            motivo=motivo_seleccionado,
+                            telefono=telefono,
                             db=session
                         )
+
+                # Imagen (certificado médico)
+                elif tipo == "image":
+                    media_id = mensaje["image"]["id"]
+                    await procesar_imagen_certificado(
+                        media_id=media_id,
+                        telefono=telefono,
+                        db=session,
+                    )
 
         # Obligatorio responder rápido a Meta
         return Response(status_code=200)

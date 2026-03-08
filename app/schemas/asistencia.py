@@ -14,6 +14,7 @@ class AsistenciaBase(SQLModel):
     lluvia: bool = Field(default=False)
     wamid: str | None = Field(default=None)
     motivo_ausencia: str | None = Field(default=None)
+    certificado_path: str | None = Field(default=None)
 
 
 # ✅ Schema de LECTURA completo (para frontend / historial / stats)
