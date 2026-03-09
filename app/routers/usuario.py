@@ -299,17 +299,6 @@ def historial_asignaciones(
 def ciclos_lectivos_por_escuela(cue: str, session: SessionDep):
     return get_ciclos_lectivos_por_escuela(db=session, cue=cue)
 
-@router.get(
-    "/cursos-por-ciclo/{cue}",
-    response_model=list[CursoMiniOut]
-)
-def cursos_por_ciclo(
-    cue: str,
-    ciclo_lectivo: str,
-    session: SessionDep,
-):
-    return get_cursos_por_escuela_y_ciclo(
-        db=session,
-        cue=cue,
-        ciclo_lectivo=ciclo_lectivo,
-    )
+@router.get("/cursos-por-ciclo/{cue}")  
+def cursos_por_ciclo(cue: str, ciclo_lectivo: str, session: SessionDep):
+    return get_cursos_por_escuela_y_ciclo(db=session, cue=cue, ciclo_lectivo=ciclo_lectivo)

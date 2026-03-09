@@ -21,7 +21,7 @@ from app.services.asistencia_service import (
     stats_lluvia_comparativo,
     alertas_inasistencias_consecutivas,
     stats_dias_semana,
-    stats_alumnos_por_rango,
+    stats_alumnos_por_rango,      
     upsert_asistencias_por_curso_fecha,
     upsert_asistencias_por_curso_rango
 )

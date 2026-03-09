@@ -1,5 +1,5 @@
 from __future__ import annotations
-from sqlalchemy import extract, and_
+from sqlalchemy import extract, and_, String
 import re
 from datetime import datetime
 from typing import Annotated
@@ -11,6 +11,8 @@ from app.core.security import get_password_hash
 from app.core.encryption import decrypt, hash_for_search
 from app.dependencies import SessionDep
 
+from app.models.alumno import Alumno
+from app.models.inscriptos import Inscriptos
 from app.models.usuario import Usuario
 from app.models.rol import Rol
 from app.models.escuela import Escuela
@@ -23,6 +25,13 @@ from app.schemas.cursos_admin import CursoMiniOut
 
 import app.services.invitacion_docente_service as inv_service
 
+def _safe_decrypt(val):
+    if not val:
+        return None
+    try:
+        return decrypt(val)
+    except Exception:
+        return val
 
 def _normalize_mail(mail: str) -> str:
     return str(mail).strip().lower()
@@ -255,38 +264,46 @@ def get_usuarios_by_escuela(tipo: RolDescripcion, CUE: str, db: SessionDep):
         )
     )
     usuarios = db.exec(statement).all()
+    if not usuarios:
+        return []
 
-    plantel_con_datos = []
+    ids = [u.idUsuario for u in usuarios]
+
+    # ── 1 sola query para todos los cursos ──
+    stmt_cursos = (
+        select(
+            CursoDocente.idUsuario,
+            Curso.nombre,
+            Curso.division,
+            CursoDocente.tipo,
+        )
+        .join(Curso, Curso.idCurso == CursoDocente.idCurso)
+        .where(
+            CursoDocente.idUsuario.in_(ids),
+            Curso.CUE == cue,
+            CursoDocente.estado == "Activo",
+        )
+    )
+    from collections import defaultdict
+    cursos_by_usuario: dict[int, list] = defaultdict(list)
+    for r in db.exec(stmt_cursos).all():
+        cursos_by_usuario[r.idUsuario].append({"nombre": f"{r.nombre} {r.division}", "tipo": r.tipo})
+
+    # ── armar resultado ──
+    plantel = []
     for user in usuarios:
         user_data = user.model_dump()
-
-        # Desencriptar campos sensibles para la respuesta
         user_data["dni"] = decrypt(user.dni) if user.dni else user.dni
         user_data["cuil"] = decrypt(user.cuil) if user.cuil else user.cuil
         user_data["fechaNacimiento"] = decrypt(user.fechaNacimiento) if user.fechaNacimiento else None
 
-        stmt_c = (
-            select(Curso.nombre, Curso.division, CursoDocente.tipo)
-            .join(CursoDocente, CursoDocente.idCurso == Curso.idCurso)
-            .where(
-                CursoDocente.idUsuario == user.idUsuario,
-                Curso.CUE == cue,
-                CursoDocente.estado == "Activo",
-            )
-        )
-        asignaciones = db.exec(stmt_c).all()
+        asignaciones = cursos_by_usuario[user.idUsuario]
+        user_data["cursos"] = asignaciones
+        tipos = set(c["tipo"] for c in asignaciones if c["tipo"])
+        user_data["tipo"] = " / ".join(sorted(tipos)) if tipos else "Titular"
+        plantel.append(user_data)
 
-        user_data["cursos"] = [
-            {"nombre": f"{c[0]} {c[1]}", "tipo": c[2]}
-            for c in asignaciones
-        ]
-
-        tipos_encontrados = set(c[2] for c in asignaciones if c[2])
-        user_data["tipo"] = " / ".join(sorted(list(tipos_encontrados))) if tipos_encontrados else "Titular"
-
-        plantel_con_datos.append(user_data)
-
-    return plantel_con_datos
+    return plantel
 
 
 # ==============================================================
@@ -407,20 +424,80 @@ def get_ciclos_lectivos_por_escuela(db: SessionDep, cue: str) -> list[str]:
     return [r for r in db.exec(stmt).all() if r]
 
 
-def get_cursos_por_escuela_y_ciclo(db: SessionDep, cue: str, ciclo_lectivo: str):
-    stmt = (
-        select(Curso.idCurso, Curso.nombre, Curso.division, Curso.turno, Curso.cicloLectivo)
+def get_cursos_por_escuela_y_ciclo(db: SessionDep, cue: str, ciclo_lectivo: str) -> list[dict]:
+    from collections import defaultdict
+    from app.core.encryption import decrypt
+
+    # ── 1. Cursos ──────────────────────────────────────────────
+    stmt_cursos = (
+        select(Curso)
         .where(Curso.CUE == cue, Curso.cicloLectivo == ciclo_lectivo)
         .order_by(Curso.nombre, Curso.division)
     )
+    cursos = db.exec(stmt_cursos).all()
+    if not cursos:
+        return []
 
+    ids_cursos = [c.idCurso for c in cursos]
+
+    # ── 2. Docentes activos (1 query) ──────────────────────────
+    stmt_doc = (
+        select(
+            CursoDocente.idCurso,
+            Usuario.idUsuario,
+            Usuario.nombre,
+            Usuario.apellido,
+            CursoDocente.tipo,
+            CursoDocente.estado,
+        )
+        .join(Usuario, Usuario.idUsuario == CursoDocente.idUsuario)
+        .where(CursoDocente.idCurso.in_(ids_cursos), CursoDocente.estado == "Activo")
+    )
+    docs_by_curso: dict[int, list] = defaultdict(list)
+    for r in db.exec(stmt_doc).all():
+        docs_by_curso[r.idCurso].append({
+            "idUsuario": r.idUsuario,
+            "docente": f"{r.apellido}, {r.nombre}",
+            "tipo": r.tipo,
+            "estado": r.estado,
+        })
+
+    # ── 3. Inscriptos (1 query) ────────────────────────────────
+    stmt_ins = (
+        select(
+            Inscriptos.idCurso,
+            Alumno.idAlumno,
+            Alumno.nombre,
+            Alumno.apellido,
+            Alumno.dni,
+            Inscriptos.activo,
+            Inscriptos.estado.cast(String).label("estado"),  # ← esto
+        )
+        .join(Alumno, Alumno.idAlumno == Inscriptos.idAlumno)
+        .where(Inscriptos.idCurso.in_(ids_cursos))
+    )
+    alumnos_by_curso: dict[int, list] = defaultdict(list)
+    for r in db.exec(stmt_ins).all():
+        alumnos_by_curso[r.idCurso].append({
+            "idAlumno": r.idAlumno,
+            "nombre": r.nombre,
+            "apellido": r.apellido,
+            "dni": _safe_decrypt(r.dni),
+            "activo": r.activo,
+            "estado": r.estado,
+        })
+
+    # ── 4. Resultado ───────────────────────────────────────────
     return [
         {
-            "idCurso": r[0],
-            "nombre": r[1],
-            "division": r[2],
-            "turno": getattr(r[3], "value", str(r[3])),
-            "cicloLectivo": r[4],
+            "idCurso": c.idCurso,
+            "nombre": c.nombre,
+            "division": c.division,
+            "turno": getattr(c.turno, "value", str(c.turno)),
+            "cicloLectivo": c.cicloLectivo,
+            "docentesAsignados": docs_by_curso[c.idCurso],
+            "alumnosInscriptos": alumnos_by_curso[c.idCurso],
+            "totalAlumnos": len(alumnos_by_curso[c.idCurso]),
         }
-        for r in db.exec(stmt).all()
+        for c in cursos
     ]

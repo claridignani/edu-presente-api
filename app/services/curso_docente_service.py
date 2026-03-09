@@ -115,7 +115,7 @@ def asignar_docente_a_curso(
     if existente:
         existente.tipo = payload.tipo
         existente.fechaDesde = payload.fechaDesde
-        existente.fechaHasta = None
+        existente.fechaHasta = payload.fechaHasta
         existente.estado = "Activo"
         db.add(existente)
         db.commit()

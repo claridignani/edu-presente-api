@@ -244,7 +244,6 @@ async def upsert_asistencias_bulk(
     cursos_ids = list({p.idCurso for p in payloads})
     for cid in cursos_ids:
         ensure_curso_exists(db, cid)
-
     ensure_alumnos_exist(db, [p.idAlumno for p in payloads])
 
     # ------- Batch: cargar alumnos ausentes antes del commit -------
@@ -277,7 +276,7 @@ async def upsert_asistencias_bulk(
     # -------- Upsert registros --------
     out: list[Asistencia] = []
     for p in payloads:
-        existente = get_one_asistencia(db, p.idCurso, p.idAlumno, p.fecha)
+        existente = existentes_map.get((p.idCurso, p.idAlumno))
         if existente:
             existente.estado = p.estado
             existente.lluvia = p.lluvia
@@ -294,10 +293,10 @@ async def upsert_asistencias_bulk(
 
     any_row = out[0]
     check_y_crear_alertas_consecutivas_para_curso_fecha(
-        db=db, idCurso=any_row.idCurso, fecha=any_row.fecha, min_consecutivas=3
+        db=db, idCurso=out[0].idCurso, fecha=out[0].fecha, min_consecutivas=3
     )
     check_y_crear_alertas_tardanzas_para_curso_fecha(
-        db=db, idCurso=any_row.idCurso, fecha=any_row.fecha, umbral=3
+        db=db, idCurso=out[0].idCurso, fecha=out[0].fecha, umbral=3
     )
 
     # Completar idCurso y fecha en los datos de envío (ya disponibles tras el commit)
