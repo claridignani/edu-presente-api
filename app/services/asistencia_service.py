@@ -253,8 +253,7 @@ async def upsert_asistencias_bulk(
         stmt_a = select(Alumno).where(Alumno.idAlumno.in_(ausentes_ids_total))
         alumnos_map = {a.idAlumno: a for a in db.exec(stmt_a).all()}
 
-    # Idempotencia: excluir alumnos que ya tienen wamid para esta fecha y curso
-    # (la asistencia ya fue notificada en un envío anterior)
+    # Idempotencia: excluir alumnos que ya tienen wamid
     ausentes_ya_notificados: set[int] = set()
     if ausentes_ids_total:
         primera_idCurso = next(p.idCurso for p in payloads if p.estado == "Ausente")
@@ -269,9 +268,21 @@ async def upsert_asistencias_bulk(
         ausentes_ya_notificados = set(db.exec(stmt_wamids).all())
 
     ausentes_ids = [i for i in ausentes_ids_total if i not in ausentes_ya_notificados]
-
-    # Batch único: responsable principal por alumno ausente SIN notificación previa
     datos_envio = _cargar_datos_whatsapp(db, ausentes_ids, alumnos_map)
+
+    # ✅ ESTO FALTABA — query batch de existentes
+    fecha = payloads[0].fecha
+    alumno_ids = [p.idAlumno for p in payloads]
+    existentes_map = {
+        (r.idCurso, r.idAlumno): r
+        for r in db.exec(
+            select(Asistencia).where(
+                Asistencia.idCurso.in_(cursos_ids),
+                Asistencia.idAlumno.in_(alumno_ids),
+                Asistencia.fecha == fecha,
+            )
+        ).all()
+    }
 
     # -------- Upsert registros --------
     out: list[Asistencia] = []
@@ -288,10 +299,7 @@ async def upsert_asistencias_bulk(
             out.append(nueva)
 
     db.commit()
-    for row in out:
-        db.refresh(row)
 
-    any_row = out[0]
     check_y_crear_alertas_consecutivas_para_curso_fecha(
         db=db, idCurso=out[0].idCurso, fecha=out[0].fecha, min_consecutivas=3
     )
@@ -299,7 +307,7 @@ async def upsert_asistencias_bulk(
         db=db, idCurso=out[0].idCurso, fecha=out[0].fecha, umbral=3
     )
 
-    # Completar idCurso y fecha en los datos de envío (ya disponibles tras el commit)
+    # Completar idCurso y fecha en los datos de envío
     ausentes_rows = {row.idAlumno: row for row in out if row.idAlumno in ausentes_ids}
     for d in datos_envio:
         row = ausentes_rows.get(d["idAlumno"])
@@ -307,7 +315,6 @@ async def upsert_asistencias_bulk(
             d["idCurso"] = row.idCurso
             d["fecha"] = row.fecha
 
-    # Programar envío en background (no bloquea la respuesta HTTP)
     if datos_envio:
         bg.add_task(_bg_enviar_whatsapp_y_guardar_wamid, datos_envio)
 
