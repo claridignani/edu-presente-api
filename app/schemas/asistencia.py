@@ -12,6 +12,16 @@ class AsistenciaEstado(str, Enum):
 class AsistenciaBase(SQLModel):
     estado: AsistenciaEstado = Field(...)
     lluvia: bool = Field(default=False)
+    wamid: str | None = Field(default=None)
+    motivo_ausencia: str | None = Field(default=None)
+    certificado_path: str | None = Field(default=None)
+
+
+# ✅ Schema de LECTURA completo (para frontend / historial / stats)
+class AsistenciaRead(AsistenciaBase):
+    idCurso: int
+    idAlumno: int
+    fecha: date
 
 
 class AsistenciaPublic(AsistenciaBase):

@@ -11,3 +11,6 @@ wheels/
 
 # Environment variables
 .env
+
+# Uploaded files (certificados médicos, etc.)
+uploads/

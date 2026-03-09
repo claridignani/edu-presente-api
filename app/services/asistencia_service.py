@@ -1,14 +1,16 @@
 # app/services/asistencia_service.py
 from __future__ import annotations
 
+import asyncio
 from datetime import date, timedelta
 from typing import Annotated, Optional, Iterable
 
-from fastapi import HTTPException, Query
-from sqlmodel import select, desc
+from fastapi import HTTPException, Query, BackgroundTasks
+from sqlmodel import Session, select, desc
 from sqlalchemy import func, case, and_
 
 from app.dependencies import SessionDep
+from app.db.database import engine
 from app.models.asistencia import Asistencia
 from app.models.alumno import Alumno
 from app.models.curso import Curso
@@ -20,8 +22,11 @@ from app.services.alerta_service import (
 )
 from app.core.encryption import decrypt, hash_for_search
 
+from app.services.whatsapp_service import enviar_plantilla_inasistencia
 from collections import defaultdict
 from app.models.inscriptos import Inscriptos
+from app.models.responsable import Responsable
+from app.models.parentesco import Parentesco
 
 
 # ==========================
@@ -39,7 +44,7 @@ def ensure_curso_exists(db: SessionDep, idCurso: int):
     return curso
 
 
-def ensure_alumno_exists(db: SessionDep, idAlumno: int):
+def ensure_alumno_exists(db: SessionDep, idAlumno: int) -> Alumno:
     alumno = db.get(Alumno, idAlumno)
     if alumno is None:
         raise HTTPException(status_code=404, detail="El alumno ingresado no existe")
@@ -62,15 +67,123 @@ def ensure_alumnos_exist(db: SessionDep, ids_alumnos: Iterable[int]):
 # Create / Upsert (uno)
 # ==========================
 
-def upsert_asistencia(db: SessionDep, payload: AsistenciaCreate) -> Asistencia:
+# ============================================================
+# WhatsApp helpers
+# ============================================================
+
+def _cargar_datos_whatsapp(
+    db: SessionDep,
+    ausentes_ids: list[int],
+    alumnos_map: dict[int, Alumno],
+) -> list[dict]:
+    """
+    Un único SELECT que trae el primer responsable con teléfono
+    para cada alumno ausente. Devuelve una lista de dicts con datos
+    primitivos (sin objetos DB) listos para pasar al background task.
+    """
+    if not ausentes_ids:
+        return []
+
+    # Subconsulta: rownum = 1 por alumno ordenado por idResponsable
+    # Usamos una query normal y agrupamos en Python (compatible con SQLite/MySQL)
+    stmt = (
+        select(
+            Parentesco.idAlumno,
+            Responsable.nro_celular,
+        )
+        .join(Responsable, Parentesco.idResponsable == Responsable.idResponsable)
+        .where(
+            Parentesco.idAlumno.in_(ausentes_ids),
+            Responsable.nro_celular != "",
+        )
+        .order_by(Parentesco.idAlumno, Parentesco.idResponsable)
+    )
+    rows = db.exec(stmt).all()
+
+    # Primer teléfono por alumno (los resultados ya vienen ordenados)
+    primer_telefono: dict[int, str] = {}
+    for id_alumno, telefono in rows:
+        if id_alumno not in primer_telefono:
+            primer_telefono[id_alumno] = telefono
+
+    datos: list[dict] = []
+    for id_alumno in ausentes_ids:
+        telefono = primer_telefono.get(id_alumno)
+        if not telefono:
+            continue
+        alumno = alumnos_map.get(id_alumno)
+        if not alumno:
+            continue
+        datos.append({
+            "idCurso":    None,   # se rellena en el llamador si se necesita
+            "idAlumno":   id_alumno,
+            "fecha":      None,   # se rellena en el llamador
+            "telefono":   telefono,
+            "apellido":   alumno.apellido,
+            "nombre":     alumno.nombre,
+            "dni":        decrypt(alumno.dni) if alumno.dni else "",
+        })
+    return datos
+
+
+async def _bg_enviar_whatsapp_y_guardar_wamid(datos_envios: list[dict]) -> None:
+    """
+    Background task: envía WhatsApp a cada entrada de `datos_envios`
+    y persiste el wamid resultante abriendo su propia sesión de DB.
+    Se ejecuta después de que la respuesta HTTP ya fue enviada al cliente.
+    """
+    async def _enviar_uno(d: dict) -> None:
+        try:
+            wamid = await enviar_plantilla_inasistencia(
+                telefono=d["telefono"],
+                apellido=d["apellido"],
+                nombre=d["nombre"],
+                dni=d["dni"],
+            )
+        except Exception as exc:
+            print(f"[BG WhatsApp] Error enviando a {d['apellido']}: {exc}")
+            return
+
+        if not wamid:
+            return
+
+        # Persiste el wamid con sesión propia (la del request ya está cerrada)
+        if d.get("idCurso") and d.get("idAlumno") and d.get("fecha"):
+            with Session(engine) as db_bg:
+                asistencia = db_bg.get(
+                    Asistencia, (d["idCurso"], d["idAlumno"], d["fecha"])
+                )
+                if asistencia:
+                    asistencia.wamid = wamid
+                    db_bg.add(asistencia)
+                    db_bg.commit()
+
+    # Envío concurrente de todos los mensajes
+    await asyncio.gather(*[_enviar_uno(d) for d in datos_envios])
+
+
+async def upsert_asistencia(
+    db: SessionDep,
+    payload: AsistenciaCreate,
+    bg: BackgroundTasks,
+) -> Asistencia:
+    """
+    Crea o actualiza (upsert) una asistencia.
+    Si el estado es Ausente, programa el envío del WhatsApp en background.
+    """
     ensure_curso_exists(db, payload.idCurso)
-    ensure_alumno_exists(db, payload.idAlumno)
+    alumno = ensure_alumno_exists(db, payload.idAlumno)
 
     existente = get_one_asistencia(db, payload.idCurso, payload.idAlumno, payload.fecha)
 
     if existente:
+        ya_notificado = bool(existente.wamid)  # idempotencia: conservar wamid original
         existente.estado = payload.estado
         existente.lluvia = payload.lluvia
+        # Preservar el wamid existente: el frontend nunca envía wamid (viene None),
+        # sobreescribirlo borraría el vínculo con la respuesta del padre.
+        if payload.wamid:
+            existente.wamid = payload.wamid
         db.add(existente)
         db.commit()
         db.refresh(existente)
@@ -83,6 +196,16 @@ def upsert_asistencia(db: SessionDep, payload: AsistenciaCreate) -> Asistencia:
                 db=db, idCurso=existente.idCurso, fecha=existente.fecha, umbral=3
             )
 
+        # Solo enviar si es la primera vez (sin wamid previo)
+        if payload.estado == "Ausente" and not ya_notificado:
+            datos = _cargar_datos_whatsapp(db, [alumno.idAlumno], {alumno.idAlumno: alumno})
+            for d in datos:
+                d["idCurso"] = existente.idCurso
+                d["idAlumno"] = existente.idAlumno
+                d["fecha"] = existente.fecha
+            if datos:
+                bg.add_task(_bg_enviar_whatsapp_y_guardar_wamid, datos)
+
         return existente
 
     nueva = Asistencia.model_validate(payload.model_dump())
@@ -94,6 +217,15 @@ def upsert_asistencia(db: SessionDep, payload: AsistenciaCreate) -> Asistencia:
         check_y_crear_alertas_consecutivas_para_curso_fecha(db=db, idCurso=nueva.idCurso, fecha=nueva.fecha, min_consecutivas=3)
         check_y_crear_alertas_tardanzas_para_curso_fecha(db=db, idCurso=nueva.idCurso, fecha=nueva.fecha, umbral=3)
 
+    if payload.estado == "Ausente":
+        datos = _cargar_datos_whatsapp(db, [alumno.idAlumno], {alumno.idAlumno: alumno})
+        for d in datos:
+            d["idCurso"] = nueva.idCurso
+            d["idAlumno"] = nueva.idAlumno
+            d["fecha"] = nueva.fecha
+        if datos:
+            bg.add_task(_bg_enviar_whatsapp_y_guardar_wamid, datos)
+
     return nueva
 
 
@@ -101,9 +233,11 @@ def upsert_asistencia(db: SessionDep, payload: AsistenciaCreate) -> Asistencia:
 # Bulk Upsert
 # ==========================
 
-import time
-
-def upsert_asistencias_bulk(db: SessionDep, payloads: list[AsistenciaCreate]) -> list[Asistencia]:
+async def upsert_asistencias_bulk(
+    db: SessionDep,
+    payloads: list[AsistenciaCreate],
+    bg: BackgroundTasks,
+) -> list[Asistencia]:
     if not payloads:
         return []
 
@@ -112,19 +246,34 @@ def upsert_asistencias_bulk(db: SessionDep, payloads: list[AsistenciaCreate]) ->
         ensure_curso_exists(db, cid)
     ensure_alumnos_exist(db, [p.idAlumno for p in payloads])
 
-    fecha = payloads[0].fecha
-    alumno_ids = [p.idAlumno for p in payloads]
-    existentes_map = {
-        (r.idCurso, r.idAlumno): r
-        for r in db.exec(
-            select(Asistencia).where(
-                Asistencia.idCurso.in_(cursos_ids),
-                Asistencia.idAlumno.in_(alumno_ids),
-                Asistencia.fecha == fecha,
-            )
-        ).all()
-    }
+    # ------- Batch: cargar alumnos ausentes antes del commit -------
+    ausentes_ids_total = list({p.idAlumno for p in payloads if p.estado == "Ausente"})
+    alumnos_map: dict[int, Alumno] = {}
+    if ausentes_ids_total:
+        stmt_a = select(Alumno).where(Alumno.idAlumno.in_(ausentes_ids_total))
+        alumnos_map = {a.idAlumno: a for a in db.exec(stmt_a).all()}
 
+    # Idempotencia: excluir alumnos que ya tienen wamid para esta fecha y curso
+    # (la asistencia ya fue notificada en un envío anterior)
+    ausentes_ya_notificados: set[int] = set()
+    if ausentes_ids_total:
+        primera_idCurso = next(p.idCurso for p in payloads if p.estado == "Ausente")
+        primera_fecha   = next(p.fecha   for p in payloads if p.estado == "Ausente")
+        stmt_wamids = select(Asistencia.idAlumno).where(
+            Asistencia.idAlumno.in_(ausentes_ids_total),
+            Asistencia.idCurso == primera_idCurso,
+            Asistencia.fecha   == primera_fecha,
+            Asistencia.wamid   != None,
+            Asistencia.wamid   != "",
+        )
+        ausentes_ya_notificados = set(db.exec(stmt_wamids).all())
+
+    ausentes_ids = [i for i in ausentes_ids_total if i not in ausentes_ya_notificados]
+
+    # Batch único: responsable principal por alumno ausente SIN notificación previa
+    datos_envio = _cargar_datos_whatsapp(db, ausentes_ids, alumnos_map)
+
+    # -------- Upsert registros --------
     out: list[Asistencia] = []
     for p in payloads:
         existente = existentes_map.get((p.idCurso, p.idAlumno))
@@ -139,13 +288,28 @@ def upsert_asistencias_bulk(db: SessionDep, payloads: list[AsistenciaCreate]) ->
             out.append(nueva)
 
     db.commit()
+    for row in out:
+        db.refresh(row)
 
+    any_row = out[0]
     check_y_crear_alertas_consecutivas_para_curso_fecha(
         db=db, idCurso=out[0].idCurso, fecha=out[0].fecha, min_consecutivas=3
     )
     check_y_crear_alertas_tardanzas_para_curso_fecha(
         db=db, idCurso=out[0].idCurso, fecha=out[0].fecha, umbral=3
     )
+
+    # Completar idCurso y fecha en los datos de envío (ya disponibles tras el commit)
+    ausentes_rows = {row.idAlumno: row for row in out if row.idAlumno in ausentes_ids}
+    for d in datos_envio:
+        row = ausentes_rows.get(d["idAlumno"])
+        if row:
+            d["idCurso"] = row.idCurso
+            d["fecha"] = row.fecha
+
+    # Programar envío en background (no bloquea la respuesta HTTP)
+    if datos_envio:
+        bg.add_task(_bg_enviar_whatsapp_y_guardar_wamid, datos_envio)
 
     return out
 
@@ -685,13 +849,14 @@ def get_alumnos_activos_de_curso(db: SessionDep, idCurso: int) -> list[int]:
     return [int(r[0] if isinstance(r, tuple) else r) for r in rows]
 
 
-def upsert_asistencias_por_curso_fecha(
+async def upsert_asistencias_por_curso_fecha(
     db: SessionDep,
     idCurso: int,
     fecha: date,
     default_estado: AsistenciaEstado,
     lluvia: bool,
     overrides: list[tuple[int, AsistenciaEstado, bool | None]],
+    bg: BackgroundTasks,
 ) -> list[Asistencia]:
     ids = get_alumnos_activos_de_curso(db, idCurso)
     if not ids:
@@ -720,10 +885,10 @@ def upsert_asistencias_por_curso_fecha(
                 estado=default_estado, lluvia=lluvia,
             ))
 
-    return upsert_asistencias_bulk(db=db, payloads=payloads)
+    return await upsert_asistencias_bulk(db=db, payloads=payloads, bg=bg)
 
 
-def upsert_asistencias_por_curso_rango(
+async def upsert_asistencias_por_curso_rango(
     db: SessionDep,
     idCurso: int,
     desde: date,
@@ -732,6 +897,7 @@ def upsert_asistencias_por_curso_rango(
     default_estado: AsistenciaEstado,
     lluvia: bool,
     overrides: list[tuple[int, AsistenciaEstado, bool | None]],
+    bg: BackgroundTasks,
     solo_alumnos: list[int] | None = None,
     chunk_size: int = 500,
 ) -> int:
@@ -778,12 +944,12 @@ def upsert_asistencias_por_curso_rango(
                 ))
 
             if len(buffer) >= chunk_size:
-                upsert_asistencias_bulk(db, buffer)
+                await upsert_asistencias_bulk(db, buffer, bg)
                 total += len(buffer)
                 buffer.clear()
 
     if buffer:
-        upsert_asistencias_bulk(db, buffer)
+        await upsert_asistencias_bulk(db, buffer, bg)
         total += len(buffer)
 
     return total
