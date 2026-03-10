@@ -5,7 +5,7 @@ from typing import Annotated, Optional
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Depends
 
 from app.dependencies import SessionDep
-from app.schemas.asistencia import AsistenciaCreate, AsistenciaPublic, AsistenciaRead  # ← agregar AsistenciaRead
+from app.schemas.asistencia import AsistenciaCreate, AsistenciaPublic, AsistenciaRead, CertificadoRevisionRequest, NotificacionDocente
 from app.services.asistencia_service import (
     upsert_asistencia,
     upsert_asistencias_bulk,
@@ -23,7 +23,9 @@ from app.services.asistencia_service import (
     stats_dias_semana,
     stats_alumnos_por_rango,      
     upsert_asistencias_por_curso_fecha,
-    upsert_asistencias_por_curso_rango
+    upsert_asistencias_por_curso_rango,
+    get_notificaciones_docente, 
+    revisar_certificado,
 )
 from app.services.whatsapp_service import enviar_plantilla_inasistencia
 from app.schemas.asistencia_bulk_curso import AsistenciaCursoFechaBulkRequest, AsistenciaCursoRangoBulkRequest
@@ -384,3 +386,62 @@ async def cargar_asistencia_curso_bulk_rango(
         bg=background_tasks,
     )
     return {"ok": True, "registros": total}
+
+
+# ==========================
+# Notificaciones del docente
+# ==========================
+
+@router.get(
+    "/cursos/{idCurso}/notificaciones-docente",
+    response_model=list[NotificacionDocente],
+    summary="Notificaciones de respuestas WPP para la campanita del docente",
+)
+def read_notificaciones_docente(
+    idCurso: int,
+    session: SessionDep,
+    current_user: Usuario = Depends(get_current_user),
+):
+    """
+    Devuelve las inasistencias del curso donde el padre ya respondió
+    (motivo_ausencia != null), ordenadas por prioridad:
+      1. Certificados pendientes de revisión
+      2. Respuestas sin certificado
+      3. Certificados ya revisados
+    """
+    return get_notificaciones_docente(db=session, idCurso=idCurso)
+
+
+# ==========================
+# Revisión de certificado
+# ==========================
+
+@router.patch(
+    "/{idCurso}/{idAlumno}/{fecha}/certificado",
+    response_model=AsistenciaRead,
+    summary="Aprobar o rechazar un certificado médico",
+)
+def patch_certificado(
+    idCurso:  int,
+    idAlumno: int,
+    fecha:    date,
+    payload:  CertificadoRevisionRequest,
+    session:  SessionDep,
+    current_user: Usuario = Depends(get_current_user),
+):
+    """
+    El docente aprueba o rechaza el certificado médico adjunto a una inasistencia.
+
+    - **aprobado** + dias_justificacion: marca como Justificado todas las
+      inasistencias del alumno en ese curso entre `fecha` y `fecha + dias - 1`.
+    - **rechazado**: solo cambia el estado del certificado, sin tocar las inasistencias.
+    """
+    row = revisar_certificado(
+        db=session,
+        idCurso=idCurso,
+        idAlumno=idAlumno,
+        fecha=fecha,
+        payload=payload,
+        revisado_por_id=current_user.idUsuario,
+    )
+    return _to_read(row)

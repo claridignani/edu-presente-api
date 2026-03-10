@@ -27,6 +27,9 @@ from app.routers.usuario_public import router as usuario_public_router
 from app.routers import requisitos
 from app.routers.pases import router as pases_router
 from app.routers.ciclo_lectivo import router as ciclo_lectivo_router
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
+
 from dotenv import load_dotenv
 load_dotenv()
 import logging
@@ -38,6 +41,9 @@ logging.basicConfig(
 
 
 app = FastAPI()
+
+_UPLOADS_DIR = Path(__file__).resolve().parent.parent / "uploads"
+app.mount("/uploads", StaticFiles(directory=str(_UPLOADS_DIR)), name="uploads")
 
 origins = [
     "http://localhost:4200",

@@ -16,6 +16,7 @@ from app.models.alumno import Alumno
 from app.models.curso import Curso
 from app.services.curso_service import get_one_curso
 from app.schemas.asistencia import AsistenciaCreate, AsistenciaEstado
+from app.schemas.asistencia import CertificadoRevisionRequest, CertificadoEstado, NotificacionDocente
 from app.services.alerta_service import (
     check_y_crear_alertas_consecutivas_para_curso_fecha,
     check_y_crear_alertas_tardanzas_para_curso_fecha,
@@ -1029,3 +1030,155 @@ def stats_alumnos_por_rango(
         }
         for r in rows
     ]
+
+
+# ==========================
+# Notificaciones del docente
+# ==========================
+
+def get_notificaciones_docente(
+    db: SessionDep,
+    idCurso: int,
+) -> list[NotificacionDocente]:
+    """
+    Devuelve todas las inasistencias del curso que generan una notificación
+    para el docente:
+      1. Padre respondió un motivo cualquiera        → tipo_notif = "respuesta"
+      2. Certificado médico subido, sin revisar      → tipo_notif = "certificado_pendiente"
+      3. Certificado ya aprobado o rechazado         → tipo_notif = "certificado_revisado"
+
+    Ordenadas: primero las pendientes de acción, luego las ya revisadas.
+    """
+    stmt = (
+        select(
+            Asistencia,
+            Alumno.nombre.label("alumno_nombre"),
+            Alumno.apellido.label("alumno_apellido"),
+            Curso.nombre.label("curso_nombre"),
+            Curso.division.label("curso_division"),
+            Curso.cicloLectivo.label("ciclo_lectivo"),
+        )
+        .join(Alumno, Alumno.idAlumno == Asistencia.idAlumno)
+        .join(Curso,  Curso.idCurso   == Asistencia.idCurso)
+        .where(
+            Asistencia.idCurso == idCurso,
+            Asistencia.estado  == "Ausente",
+            # Solo registros donde el padre interactuó de alguna forma
+            Asistencia.motivo_ausencia != None,
+        )
+        .order_by(Asistencia.fecha.desc())
+    )
+
+    rows = db.exec(stmt).all()
+    resultado: list[NotificacionDocente] = []
+
+    for row in rows:
+        asistencia: Asistencia = row[0]
+        alumno_nombre  = f"{row.alumno_apellido}, {row.alumno_nombre}"
+        curso_str      = f"{row.curso_nombre} {row.curso_division} ({row.ciclo_lectivo})"
+
+        # Determinar tipo de notificación
+        if asistencia.certificado_estado in (
+            CertificadoEstado.aprobado, CertificadoEstado.rechazado
+        ):
+            tipo = "certificado_revisado"
+        elif asistencia.certificado_path and (
+            asistencia.certificado_estado == CertificadoEstado.pendiente
+            or asistencia.certificado_estado is None
+        ):
+            tipo = "certificado_pendiente"
+        else:
+            tipo = "respuesta"
+
+        resultado.append(
+            NotificacionDocente(
+                idCurso=asistencia.idCurso,
+                idAlumno=asistencia.idAlumno,
+                fecha=asistencia.fecha,
+                alumnoNombre=alumno_nombre,
+                curso=curso_str,
+                motivo_ausencia=asistencia.motivo_ausencia,
+                certificado_path=asistencia.certificado_path,
+                certificado_estado=(
+                    asistencia.certificado_estado.value
+                    if asistencia.certificado_estado else None
+                ),
+                justificado_hasta=asistencia.justificado_hasta,
+                tipo_notif=tipo,
+            )
+        )
+
+    # Ordenar: pendientes primero, revisados al final
+    orden = {"certificado_pendiente": 0, "respuesta": 1, "certificado_revisado": 2}
+    resultado.sort(key=lambda n: orden.get(n.tipo_notif, 9))
+
+    return resultado
+
+
+# ==========================
+# Revisión de certificado
+# ==========================
+
+def revisar_certificado(
+    db: SessionDep,
+    idCurso: int,
+    idAlumno: int,
+    fecha: date,
+    payload: CertificadoRevisionRequest,
+    revisado_por_id: int,
+) -> Asistencia:
+    """
+    El docente aprueba o rechaza un certificado médico.
+
+    Si aprueba:
+      - Pone certificado_estado = 'aprobado' en la inasistencia original
+      - Calcula justificado_hasta = fecha + dias_justificacion
+      - Marca como 'Justificado' TODAS las inasistencias del alumno en ese curso
+        cuya fecha esté entre `fecha` y `justificado_hasta`
+
+    Si rechaza:
+      - Solo cambia certificado_estado = 'rechazado' en esta inasistencia
+      - No toca el estado de ninguna otra fila
+    """
+    asistencia = db.get(Asistencia, (idCurso, idAlumno, fecha))
+    if not asistencia:
+        raise HTTPException(status_code=404, detail="Asistencia no encontrada")
+
+    if not asistencia.certificado_path:
+        raise HTTPException(
+            status_code=400,
+            detail="Esta inasistencia no tiene certificado médico adjunto"
+        )
+
+    asistencia.certificado_estado = payload.accion
+    asistencia.revisado_por       = revisado_por_id
+
+    if payload.accion == CertificadoEstado.aprobado:
+        if not payload.dias_justificacion:
+            raise HTTPException(
+                status_code=400,
+                detail="Se requieren los días de justificación para aprobar"
+            )
+
+        justificado_hasta = fecha + timedelta(days=payload.dias_justificacion - 1)
+        asistencia.justificado_hasta = justificado_hasta
+
+        # Justificar todas las inasistencias del alumno en el rango
+        stmt_rango = select(Asistencia).where(
+            Asistencia.idCurso  == idCurso,
+            Asistencia.idAlumno == idAlumno,
+            Asistencia.estado   == "Ausente",
+            Asistencia.fecha    >= fecha,
+            Asistencia.fecha    <= justificado_hasta,
+        )
+        inasistencias_en_rango = db.exec(stmt_rango).all()
+
+        for inasistencia in inasistencias_en_rango:
+            inasistencia.estado = AsistenciaEstado.Justificado
+            db.add(inasistencia)
+
+    db.add(asistencia)
+    db.commit()
+    db.refresh(asistencia)
+
+    return asistencia

@@ -17,6 +17,7 @@ from app.schemas.alumno import AlumnoDetallePublic
 from app.schemas.alumno_detalle import AlumnoEscuelaDetallePublic
 from app.schemas.alumnos_historial import AlumnoCicloPage
 from app.schemas.alumno_masivo import AlumnoMasivoRequest, AlumnoMasivoResponse, AlumnoMasivoItemResult
+from app.services.alumno_service import get_certificados_alumno
 from app.services.responsable_service import add_responsable, get_responsable_by_dni
 from app.services.parentesco_service import upsert_parentesco, get_responsables_by_alumno
 from app.core.encryption import decrypt
@@ -175,6 +176,10 @@ def getAlumnosByCurso(
         return get_alumnos_by_curso(idCurso=idCurso, db=session)
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
+    
+@router.get("/{idAlumno}/certificados", response_model=list[dict])
+def get_certificados(idAlumno: int, session: SessionDep):
+    return get_certificados_alumno(db=session, idAlumno=idAlumno)
 
 
 @router.post("/", response_model=AlumnoPublic)

@@ -28,6 +28,8 @@ from app.services.curso_service import get_one_curso
 from app.schemas.alumnos_historial import AlumnoCicloPage, AlumnoCicloRow
 from app.schemas.inscriptos import EstadoInscripcion
 from app.models.preinscripcion import Preinscripcion
+from app.models.asistencia import Asistencia
+from app.models.usuario import Usuario as UsuarioModel
 from app.core.encryption import decrypt, hash_for_search
 
 
@@ -775,3 +777,34 @@ def buscar_alumno_por_dni(db: SessionDep, dni: str, current_user) -> dict:
         "tiene_inscripcion_activa": tiene_activa,
         "escuela_activa": escuela_activa,
     }
+
+def get_certificados_alumno(db: SessionDep, idAlumno: int) -> list[dict]:
+    """
+    Devuelve todos los certificados médicos presentados por un alumno.
+    Solo filas de asistencia donde certificado_path IS NOT NULL.
+    Incluye nombre del docente que revisó (revisado_por → usuario).
+    """
+    from app.models.asistencia import Asistencia
+    from app.models.usuario import Usuario as UsuarioModel
+
+    stmt = (
+        select(Asistencia, UsuarioModel)
+        .outerjoin(UsuarioModel, UsuarioModel.idUsuario == Asistencia.revisado_por)
+        .where(Asistencia.idAlumno == idAlumno)
+        .where(Asistencia.certificado_path.is_not(None))
+        .order_by(desc(Asistencia.fecha))
+    )
+
+    rows = db.exec(stmt).all()
+    result = []
+    for asis, usuario in rows:
+        result.append({
+            "fecha":              str(asis.fecha),
+            "motivo":             asis.motivo_ausencia,
+            "certificado_estado": asis.certificado_estado,
+            "certificado_path":   asis.certificado_path,
+            "justificado_desde":  str(asis.fecha),
+            "justificado_hasta":  str(asis.justificado_hasta) if asis.justificado_hasta else None,
+            "revisado_por":       f"{usuario.nombre} {usuario.apellido}" if usuario else None,
+        })
+    return result

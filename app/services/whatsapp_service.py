@@ -345,31 +345,28 @@ async def procesar_imagen_certificado(media_id: str, telefono: str, db: SessionD
        que aún no tenga certificado (sin restricción de fecha).
     2. Descarga la imagen desde la API de Meta.
     3. La guarda en uploads/certificados/.
-    4. Actualiza certificado_path en la DB.
+    4. Actualiza certificado_path y certificado_estado = 'pendiente' en la DB.
+       → El estado 'pendiente' es la señal para que aparezca en la campanita del docente.
     """
     telefono_normalizado = _normalizar_telefono(telefono)
 
-    # Buscar inasistencias por Enfermedad sin certificado, vinculadas a este teléfono
-    # Ordenadas por fecha descendente para tomar la más reciente primero
     stmt = (
         select(Asistencia)
         .join(Parentesco, Asistencia.idAlumno == Parentesco.idAlumno)
         .join(Responsable, Parentesco.idResponsable == Responsable.idResponsable)
         .where(
             and_(
-                Asistencia.estado == "Ausente",
+                Asistencia.estado          == "Ausente",
                 Asistencia.motivo_ausencia == "Enfermedad",
-                Asistencia.certificado_path == None,  # sin certificado aún
+                Asistencia.certificado_path == None,
             )
         )
         .order_by(Asistencia.fecha.desc())
     )
     resultados = db.exec(stmt).all()
 
-    # Filtrar por teléfono normalizado
     inasistencia = None
     for row in resultados:
-        # Obtener teléfono(s) del responsable vinculado
         stmt_tel = (
             select(Responsable.nro_celular)
             .join(Parentesco, Parentesco.idResponsable == Responsable.idResponsable)
@@ -387,7 +384,6 @@ async def procesar_imagen_certificado(media_id: str, telefono: str, db: SessionD
         print(f"⚠️ Imagen recibida de {telefono} pero no se encontró inasistencia por enfermedad sin certificado")
         return
 
-    # Descargar la imagen
     resultado = await descargar_media_whatsapp(media_id)
     if not resultado:
         print(f"❌ No se pudo descargar la imagen con media_id: {media_id}")
@@ -396,18 +392,18 @@ async def procesar_imagen_certificado(media_id: str, telefono: str, db: SessionD
     contenido, mime_type = resultado
     extension = _MIME_TO_EXT.get(mime_type, "jpg")
 
-    # Guardar en disco
     _UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     filename = f"{inasistencia.idCurso}_{inasistencia.idAlumno}_{inasistencia.fecha}.{extension}"
     filepath = _UPLOADS_DIR / filename
     filepath.write_bytes(contenido)
 
-    # Actualizar la DB
-    inasistencia.certificado_path = str(filepath)
+    # ✅ Guardar SOLO el nombre del archivo (no la ruta absoluta)
+    inasistencia.certificado_path   = filename
+    inasistencia.certificado_estado = "pendiente"
     db.add(inasistencia)
     db.commit()
 
-    print(f"✅ Certificado médico guardado: {filepath}")
+    print(f"✅ Certificado médico guardado y marcado como pendiente: {filepath}")
     print(f"   Alumno ID: {inasistencia.idAlumno}, Curso: {inasistencia.idCurso}, Fecha: {inasistencia.fecha}")
 
 
