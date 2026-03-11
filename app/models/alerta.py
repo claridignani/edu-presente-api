@@ -1,4 +1,5 @@
 # app/models/alerta.py
+
 from __future__ import annotations
 
 from datetime import datetime, date
@@ -6,7 +7,7 @@ from enum import Enum
 from typing import Optional
 
 from sqlmodel import SQLModel, Field
-from sqlalchemy import Column, DateTime, text
+from sqlalchemy import Column, DateTime, Text, text
 from sqlalchemy import Enum as SAEnum
 
 
@@ -42,7 +43,6 @@ class Alerta(SQLModel, table=True):
     idCurso:  int = Field(foreign_key="curso.idCurso",   index=True, nullable=False)
     idAlumno: int = Field(foreign_key="alumno.idAlumno", index=True, nullable=False)
 
-    # ✅ FK al usuario que creó la alerta — necesario para filtrar alertas del docente
     created_by: Optional[int] = Field(
         default=None,
         foreign_key="usuario.idUsuario",
@@ -80,6 +80,19 @@ class Alerta(SQLModel, table=True):
 
     fechaInicioRacha: Optional[date] = Field(default=None)
     fechaFinRacha:    Optional[date] = Field(default=None)
+
+    # Fechas individuales de ausencia o tardanza, separadas por coma:
+    # "2025-03-01,2025-03-03,2025-03-07"
+    # Permite mostrar en el frontend exactamente qué días faltó/llegó tarde.
+    fechas: Optional[str] = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True),
+    )
+
+    motivos_ausencia: Optional[str] = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True),
+    )
 
     archivada: bool = Field(default=False, index=True, nullable=False)
     detalle: Optional[str] = Field(default=None, max_length=500)

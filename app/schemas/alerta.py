@@ -27,8 +27,12 @@ class AlertaListItem(SQLModel):
     fechaFinRacha: date
     fechaInicioRacha: date
 
-    detalle: Optional[str] = Field(default=None, max_length=500)  # ✅
+    detalle: Optional[str] = Field(default=None, max_length=500)
 
+    # Fechas individuales: "2025-03-01,2025-03-03,..."
+    # El frontend las parsea para mostrar chips o lista de días
+    fechas: Optional[str] = None
+    motivos_ausencia: Optional[str] = None
     estado: EstadoAlerta
     ultimaAccionAt: datetime | None = None
     archivada: bool = False
@@ -38,7 +42,7 @@ class AlertaPatch(SQLModel):
     estado: Optional[EstadoAlerta] = None
     archivada: Optional[bool] = None
     actor_id: Optional[int] = None
-    detalle: Optional[str] = Field(default=None, max_length=500)  # ✅
+    detalle: Optional[str] = Field(default=None, max_length=500)
 
 
 class AlertaCreate(SQLModel):
@@ -50,12 +54,16 @@ class AlertaCreate(SQLModel):
     motivo: MotivoAlerta
     estado: EstadoAlerta
 
-    detalle: Optional[str] = Field(default=None, max_length=500)  # ✅ UNA sola vez
+    detalle: Optional[str] = Field(default=None, max_length=500)
 
     created_by: Optional[int] = None
     consecutivas: Optional[int] = 0
     fechaInicioRacha: Optional[date] = None
     fechaFinRacha: Optional[date] = None
+
+    # Fechas individuales opcionales al crear manualmente
+    fechas: Optional[str] = None
+
 
 class AlertaResumenAlumno(SQLModel):
     """Resumen de una alerta para el historial del alumno."""
@@ -68,3 +76,4 @@ class AlertaResumenAlumno(SQLModel):
     totalIntervenciones: int
     resuelta: bool
     archivada: bool
+

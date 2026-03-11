@@ -19,6 +19,8 @@ from app.schemas.asistencia import AsistenciaCreate, AsistenciaEstado
 from app.schemas.asistencia import CertificadoRevisionRequest, CertificadoEstado, NotificacionDocente
 from app.services.alerta_service import (
     check_y_crear_alertas_consecutivas_para_curso_fecha,
+    check_y_crear_alertas_reiteradas_para_curso_fecha,
+    check_y_crear_alertas_tardanzas_consecutivas_para_curso_fecha,
     check_y_crear_alertas_tardanzas_para_curso_fecha,
 )
 from app.core.encryption import decrypt, hash_for_search
@@ -65,8 +67,36 @@ def ensure_alumnos_exist(db: SessionDep, ids_alumnos: Iterable[int]):
 
 
 # ==========================
-# Create / Upsert (uno)
+# Helpers internos: disparar las 4 alertas automáticas
 # ==========================
+
+def _disparar_alertas_automaticas(db: SessionDep, idCurso: int, fecha: date, estado: str) -> None:
+    """
+    Centraliza las 4 llamadas de generación/actualización de alertas automáticas.
+    Se llama después de cada upsert de asistencia con estado Ausente o Tarde.
+
+    Umbrales configurados:
+      - Ausencias consecutivas:  3 días seguidos
+      - Ausencias reiteradas:   10 ausencias en el año (no necesariamente seguidas)
+      - Tardanzas consecutivas:  4 llegadas tarde seguidas
+      - Tardanzas reiteradas:   15 llegadas tarde en el año
+    """
+    if estado == "Ausente":
+        check_y_crear_alertas_consecutivas_para_curso_fecha(
+            db=db, idCurso=idCurso, fecha=fecha, min_consecutivas=3
+        )
+        check_y_crear_alertas_reiteradas_para_curso_fecha(
+            db=db, idCurso=idCurso, fecha=fecha, umbral=10
+        )
+
+    elif estado == "Tarde":
+        check_y_crear_alertas_tardanzas_consecutivas_para_curso_fecha(
+            db=db, idCurso=idCurso, fecha=fecha, min_consecutivas=4
+        )
+        check_y_crear_alertas_tardanzas_para_curso_fecha(
+            db=db, idCurso=idCurso, fecha=fecha, umbral=15
+        )
+
 
 # ============================================================
 # WhatsApp helpers
@@ -85,8 +115,6 @@ def _cargar_datos_whatsapp(
     if not ausentes_ids:
         return []
 
-    # Subconsulta: rownum = 1 por alumno ordenado por idResponsable
-    # Usamos una query normal y agrupamos en Python (compatible con SQLite/MySQL)
     stmt = (
         select(
             Parentesco.idAlumno,
@@ -101,7 +129,6 @@ def _cargar_datos_whatsapp(
     )
     rows = db.exec(stmt).all()
 
-    # Primer teléfono por alumno (los resultados ya vienen ordenados)
     primer_telefono: dict[int, str] = {}
     for id_alumno, telefono in rows:
         if id_alumno not in primer_telefono:
@@ -116,9 +143,9 @@ def _cargar_datos_whatsapp(
         if not alumno:
             continue
         datos.append({
-            "idCurso":    None,   # se rellena en el llamador si se necesita
+            "idCurso":    None,
             "idAlumno":   id_alumno,
-            "fecha":      None,   # se rellena en el llamador
+            "fecha":      None,
             "telefono":   telefono,
             "apellido":   alumno.apellido,
             "nombre":     alumno.nombre,
@@ -131,7 +158,6 @@ async def _bg_enviar_whatsapp_y_guardar_wamid(datos_envios: list[dict]) -> None:
     """
     Background task: envía WhatsApp a cada entrada de `datos_envios`
     y persiste el wamid resultante abriendo su propia sesión de DB.
-    Se ejecuta después de que la respuesta HTTP ya fue enviada al cliente.
     """
     async def _enviar_uno(d: dict) -> None:
         try:
@@ -148,7 +174,6 @@ async def _bg_enviar_whatsapp_y_guardar_wamid(datos_envios: list[dict]) -> None:
         if not wamid:
             return
 
-        # Persiste el wamid con sesión propia (la del request ya está cerrada)
         if d.get("idCurso") and d.get("idAlumno") and d.get("fecha"):
             with Session(engine) as db_bg:
                 asistencia = db_bg.get(
@@ -159,9 +184,12 @@ async def _bg_enviar_whatsapp_y_guardar_wamid(datos_envios: list[dict]) -> None:
                     db_bg.add(asistencia)
                     db_bg.commit()
 
-    # Envío concurrente de todos los mensajes
     await asyncio.gather(*[_enviar_uno(d) for d in datos_envios])
 
+
+# ==========================
+# Create / Upsert (uno)
+# ==========================
 
 async def upsert_asistencia(
     db: SessionDep,
@@ -170,7 +198,7 @@ async def upsert_asistencia(
 ) -> Asistencia:
     """
     Crea o actualiza (upsert) una asistencia.
-    Si el estado es Ausente, programa el envío del WhatsApp en background.
+    Dispara las 4 alertas automáticas según el estado registrado.
     """
     ensure_curso_exists(db, payload.idCurso)
     alumno = ensure_alumno_exists(db, payload.idAlumno)
@@ -178,11 +206,9 @@ async def upsert_asistencia(
     existente = get_one_asistencia(db, payload.idCurso, payload.idAlumno, payload.fecha)
 
     if existente:
-        ya_notificado = bool(existente.wamid)  # idempotencia: conservar wamid original
+        ya_notificado = bool(existente.wamid)
         existente.estado = payload.estado
         existente.lluvia = payload.lluvia
-        # Preservar el wamid existente: el frontend nunca envía wamid (viene None),
-        # sobreescribirlo borraría el vínculo con la respuesta del padre.
         if payload.wamid:
             existente.wamid = payload.wamid
         db.add(existente)
@@ -190,14 +216,8 @@ async def upsert_asistencia(
         db.refresh(existente)
 
         if payload.estado in ("Ausente", "Tarde"):
-            check_y_crear_alertas_consecutivas_para_curso_fecha(
-                db=db, idCurso=existente.idCurso, fecha=existente.fecha, min_consecutivas=3
-            )
-            check_y_crear_alertas_tardanzas_para_curso_fecha(
-                db=db, idCurso=existente.idCurso, fecha=existente.fecha, umbral=3
-            )
+            _disparar_alertas_automaticas(db, existente.idCurso, existente.fecha, payload.estado)
 
-        # Solo enviar si es la primera vez (sin wamid previo)
         if payload.estado == "Ausente" and not ya_notificado:
             datos = _cargar_datos_whatsapp(db, [alumno.idAlumno], {alumno.idAlumno: alumno})
             for d in datos:
@@ -215,8 +235,7 @@ async def upsert_asistencia(
     db.refresh(nueva)
 
     if payload.estado in ("Ausente", "Tarde"):
-        check_y_crear_alertas_consecutivas_para_curso_fecha(db=db, idCurso=nueva.idCurso, fecha=nueva.fecha, min_consecutivas=3)
-        check_y_crear_alertas_tardanzas_para_curso_fecha(db=db, idCurso=nueva.idCurso, fecha=nueva.fecha, umbral=3)
+        _disparar_alertas_automaticas(db, nueva.idCurso, nueva.fecha, payload.estado)
 
     if payload.estado == "Ausente":
         datos = _cargar_datos_whatsapp(db, [alumno.idAlumno], {alumno.idAlumno: alumno})
@@ -247,14 +266,12 @@ async def upsert_asistencias_bulk(
         ensure_curso_exists(db, cid)
     ensure_alumnos_exist(db, [p.idAlumno for p in payloads])
 
-    # ------- Batch: cargar alumnos ausentes antes del commit -------
     ausentes_ids_total = list({p.idAlumno for p in payloads if p.estado == "Ausente"})
     alumnos_map: dict[int, Alumno] = {}
     if ausentes_ids_total:
         stmt_a = select(Alumno).where(Alumno.idAlumno.in_(ausentes_ids_total))
         alumnos_map = {a.idAlumno: a for a in db.exec(stmt_a).all()}
 
-    # Idempotencia: excluir alumnos que ya tienen wamid
     ausentes_ya_notificados: set[int] = set()
     if ausentes_ids_total:
         primera_idCurso = next(p.idCurso for p in payloads if p.estado == "Ausente")
@@ -271,7 +288,6 @@ async def upsert_asistencias_bulk(
     ausentes_ids = [i for i in ausentes_ids_total if i not in ausentes_ya_notificados]
     datos_envio = _cargar_datos_whatsapp(db, ausentes_ids, alumnos_map)
 
-    # ✅ ESTO FALTABA — query batch de existentes
     fecha = payloads[0].fecha
     alumno_ids = [p.idAlumno for p in payloads]
     existentes_map = {
@@ -285,7 +301,6 @@ async def upsert_asistencias_bulk(
         ).all()
     }
 
-    # -------- Upsert registros --------
     out: list[Asistencia] = []
     for p in payloads:
         existente = existentes_map.get((p.idCurso, p.idAlumno))
@@ -301,14 +316,15 @@ async def upsert_asistencias_bulk(
 
     db.commit()
 
-    check_y_crear_alertas_consecutivas_para_curso_fecha(
-        db=db, idCurso=out[0].idCurso, fecha=out[0].fecha, min_consecutivas=3
-    )
-    check_y_crear_alertas_tardanzas_para_curso_fecha(
-        db=db, idCurso=out[0].idCurso, fecha=out[0].fecha, umbral=3
-    )
+    # Disparar alertas automáticas para cada estado presente en el bulk
+    # Agrupamos por curso+fecha+estado para no repetir llamadas innecesarias
+    estados_en_bulk = {p.estado for p in payloads if p.estado in ("Ausente", "Tarde")}
+    idCurso_bulk = out[0].idCurso
+    fecha_bulk = out[0].fecha
 
-    # Completar idCurso y fecha en los datos de envío
+    for estado_bulk in estados_en_bulk:
+        _disparar_alertas_automaticas(db, idCurso_bulk, fecha_bulk, estado_bulk)
+
     ausentes_rows = {row.idAlumno: row for row in out if row.idAlumno in ausentes_ids}
     for d in datos_envio:
         row = ausentes_rows.get(d["idAlumno"])
@@ -339,15 +355,15 @@ def get_asistencias_by_curso(
     db: SessionDep,
     idCurso: int,
     offset: int = 0,
-    limit: Annotated[int, Query(le=10000)] = 10000,  
-    desde: Optional[date] = None,                    
-    hasta: Optional[date] = None,                     
+    limit: Annotated[int, Query(le=10000)] = 10000,
+    desde: Optional[date] = None,
+    hasta: Optional[date] = None,
 ):
     ensure_curso_exists(db, idCurso)
     stmt = select(Asistencia).where(Asistencia.idCurso == idCurso)
 
     if desde:
-        stmt = stmt.where(Asistencia.fecha >= desde)  
+        stmt = stmt.where(Asistencia.fecha >= desde)
     if hasta:
         stmt = stmt.where(Asistencia.fecha <= hasta)
 
@@ -800,7 +816,7 @@ def alertas_inasistencias_consecutivas(
                     "idAlumno": idAlumno,
                     "idCurso": idCurso,
                     "alumnoNombre": alumno_nombre,
-                    "dni": decrypt(last.dni) if last.dni else last.dni,   # ← FIX
+                    "dni": decrypt(last.dni) if last.dni else last.dni,
                     "curso": curso_str,
                     "fechaFinRacha": str(best_end),
                     "consecutivas": int(best_streak),
@@ -1024,7 +1040,7 @@ def stats_alumnos_por_rango(
         {
             "idAlumno": r.idAlumno,
             "nombre": f"{r.apellido}, {r.nombre}",
-            "dni": decrypt(r.dni) if r.dni else r.dni,       # ← FIX
+            "dni": decrypt(r.dni) if r.dni else r.dni,
             "curso": f"{r.cursoNombre} {r.division} ({r.cicloLectivo})",
             "ausencias": int(r.faltas or 0),
         }
@@ -1040,15 +1056,6 @@ def get_notificaciones_docente(
     db: SessionDep,
     idCurso: int,
 ) -> list[NotificacionDocente]:
-    """
-    Devuelve todas las inasistencias del curso que generan una notificación
-    para el docente:
-      1. Padre respondió un motivo cualquiera        → tipo_notif = "respuesta"
-      2. Certificado médico subido, sin revisar      → tipo_notif = "certificado_pendiente"
-      3. Certificado ya aprobado o rechazado         → tipo_notif = "certificado_revisado"
-
-    Ordenadas: primero las pendientes de acción, luego las ya revisadas.
-    """
     stmt = (
         select(
             Asistencia,
@@ -1063,7 +1070,6 @@ def get_notificaciones_docente(
         .where(
             Asistencia.idCurso == idCurso,
             Asistencia.estado  == "Ausente",
-            # Solo registros donde el padre interactuó de alguna forma
             Asistencia.motivo_ausencia != None,
         )
         .order_by(Asistencia.fecha.desc())
@@ -1077,7 +1083,6 @@ def get_notificaciones_docente(
         alumno_nombre  = f"{row.alumno_apellido}, {row.alumno_nombre}"
         curso_str      = f"{row.curso_nombre} {row.curso_division} ({row.ciclo_lectivo})"
 
-        # Determinar tipo de notificación
         if asistencia.certificado_estado in (
             CertificadoEstado.aprobado, CertificadoEstado.rechazado
         ):
@@ -1108,7 +1113,6 @@ def get_notificaciones_docente(
             )
         )
 
-    # Ordenar: pendientes primero, revisados al final
     orden = {"certificado_pendiente": 0, "respuesta": 1, "certificado_revisado": 2}
     resultado.sort(key=lambda n: orden.get(n.tipo_notif, 9))
 
@@ -1127,19 +1131,6 @@ def revisar_certificado(
     payload: CertificadoRevisionRequest,
     revisado_por_id: int,
 ) -> Asistencia:
-    """
-    El docente aprueba o rechaza un certificado médico.
-
-    Si aprueba:
-      - Pone certificado_estado = 'aprobado' en la inasistencia original
-      - Calcula justificado_hasta = fecha + dias_justificacion
-      - Marca como 'Justificado' TODAS las inasistencias del alumno en ese curso
-        cuya fecha esté entre `fecha` y `justificado_hasta`
-
-    Si rechaza:
-      - Solo cambia certificado_estado = 'rechazado' en esta inasistencia
-      - No toca el estado de ninguna otra fila
-    """
     asistencia = db.get(Asistencia, (idCurso, idAlumno, fecha))
     if not asistencia:
         raise HTTPException(status_code=404, detail="Asistencia no encontrada")
@@ -1163,7 +1154,6 @@ def revisar_certificado(
         justificado_hasta = fecha + timedelta(days=payload.dias_justificacion - 1)
         asistencia.justificado_hasta = justificado_hasta
 
-        # Justificar todas las inasistencias del alumno en el rango
         stmt_rango = select(Asistencia).where(
             Asistencia.idCurso  == idCurso,
             Asistencia.idAlumno == idAlumno,
