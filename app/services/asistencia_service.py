@@ -718,6 +718,7 @@ def stats_lluvia_comparativo(
                 func.sum(ausentes_expr).label("ausentes"),
                 func.sum(tardes_expr).label("tardes"),
                 func.count().label("total"),
+                func.count(func.distinct(Asistencia.fecha)).label("dias_distintos"),  # ← NUEVO
             )
             .select_from(Asistencia, Curso)
             .where(and_(*where))
@@ -728,9 +729,11 @@ def stats_lluvia_comparativo(
         pres = int(r.presentes or 0)
         aus = int(r.ausentes or 0)
         tar = int(r.tardes or 0)
+        dias = int(r.dias_distintos or 0)  # ← NUEVO
 
         return {
-            "total": total,
+            "total": dias,          # ← CAMBIADO: ahora son días únicos, no registros
+            "registros": total,     # ← NUEVO (por si lo necesitás en otro lado)
             "presentes": pres,
             "ausentes": aus,
             "tardes": tar,
@@ -740,6 +743,43 @@ def stats_lluvia_comparativo(
 
     return {"lluvia": calc(True), "sinLluvia": calc(False)}
 
+def stats_motivos_ausencia(
+    db: SessionDep,
+    cue: str,
+    desde: date,
+    hasta: date,
+    curso_ids: Optional[list[int]] = None,
+    top_n: int = 10,
+) -> list[dict]:
+    where = _base_where(cue, desde, hasta, curso_ids)
+    where = list(where) + [
+        Asistencia.motivo_ausencia != None,
+        Asistencia.motivo_ausencia != "",
+    ]
+
+    stmt = (
+        select(
+            Asistencia.motivo_ausencia.label("motivo"),
+            func.count().label("cantidad"),
+        )
+        .select_from(Asistencia, Curso)
+        .where(and_(*where))
+        .group_by(Asistencia.motivo_ausencia)
+        .order_by(func.count().desc())
+        .limit(top_n)
+    )
+
+    rows = db.exec(stmt).all()
+    total = sum(int(r.cantidad or 0) for r in rows)
+
+    return [
+        {
+            "motivo": r.motivo,
+            "cantidad": int(r.cantidad or 0),
+            "pct": round((int(r.cantidad or 0) / total) * 100, 1) if total else 0.0,
+        }
+        for r in rows
+    ]
 
 def alertas_inasistencias_consecutivas(
     db: SessionDep,

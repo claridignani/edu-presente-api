@@ -26,6 +26,7 @@ from app.services.asistencia_service import (
     upsert_asistencias_por_curso_rango,
     get_notificaciones_docente, 
     revisar_certificado,
+    stats_motivos_ausencia
 )
 from app.services.whatsapp_service import enviar_plantilla_inasistencia
 from app.schemas.asistencia_bulk_curso import AsistenciaCursoFechaBulkRequest, AsistenciaCursoRangoBulkRequest
@@ -146,6 +147,21 @@ def read_stats_distribucion(
         curso_ids=cursos,
     )
 
+@router.get("/stats/motivos")
+def read_stats_motivos(
+    session: SessionDep,
+    cue: str,
+    desde: date,
+    hasta: date,
+    cursoIds: Optional[list[int]] = Query(default=None),
+    curso_ids: Optional[list[int]] = Query(default=None),
+    topN: int = Query(default=10, ge=1, le=50),
+):
+    cursos = cursoIds if cursoIds is not None else curso_ids
+    return stats_motivos_ausencia(
+        db=session, cue=cue, desde=desde, hasta=hasta,
+        curso_ids=cursos, top_n=topN,
+    )
 
 @router.get("/stats/riesgo")
 def read_stats_riesgo_por_curso(

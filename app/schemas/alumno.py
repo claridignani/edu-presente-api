@@ -15,13 +15,13 @@ class AlumnoEstado(Enum):
 class AlumnoBase(SQLModel):
     nombre: str = Field(max_length=100)
     apellido: str = Field(max_length=100)
-    dni: str = Field(index=True, max_length=255)
+    dni: str = Field(index=True, max_length=500)
     dni_hash: Optional[str] = Field(default=None, index=True)
-    fecha_nacimiento: str = Field(max_length=255)   # str porque se guarda encriptado
+    fecha_nacimiento: str = Field(max_length=500)
     fecha_ingreso: date = Field()
-    direccion: str = Field(max_length=255)
-    localidad: Optional[str] = Field(default=None, max_length=100)   # ← nuevo
-    provincia: Optional[str] = Field(default=None, max_length=100)   # ← nuevo
+    direccion: str = Field(max_length=500)
+    localidad: Optional[str] = Field(default=None, max_length=100)
+    provincia: Optional[str] = Field(default=None, max_length=100)
     estado: AlumnoEstado = Field(default=AlumnoEstado.Inactivo)
 
 
@@ -30,17 +30,17 @@ class AlumnoCreate(AlumnoBase):
     CUE: Optional[str] = None
     cicloLectivo: Optional[str] = None
 
-    @field_validator("dni", mode="before")
+    @field_validator("dni", mode="before", check_fields=False)
     @classmethod
     def encrypt_dni(cls, v):
         return encrypt(str(v)) if v else v
 
-    @field_validator("direccion", mode="before")
+    @field_validator("direccion", mode="before", check_fields=False)
     @classmethod
     def encrypt_direccion(cls, v):
         return encrypt(str(v)) if v else v
 
-    @field_validator("fecha_nacimiento", mode="before")
+    @field_validator("fecha_nacimiento", mode="before", check_fields=False)
     @classmethod
     def encrypt_fecha_nacimiento(cls, v):
         return encrypt(str(v)) if v else v
@@ -72,8 +72,8 @@ class AlumnoUpdate(SQLModel):
     fecha_nacimiento: Optional[str] = None
     fecha_ingreso: Optional[date] = None
     direccion: Optional[str] = None
-    localidad: Optional[str] = None   # ← nuevo
-    provincia: Optional[str] = None   # ← nuevo
+    localidad: Optional[str] = None
+    provincia: Optional[str] = None
     estado: Optional[AlumnoEstado] = None
 
     @field_validator("dni", mode="before")
