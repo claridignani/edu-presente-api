@@ -1,6 +1,7 @@
 import os
 from sqlmodel import SQLModel, create_engine
 from app.core.config import DATABASE_URL
+from app.models.password_reset_token import PasswordResetToken  # noqa
 
 engine = create_engine(
     DATABASE_URL,

@@ -27,6 +27,7 @@ from app.routers.usuario_public import router as usuario_public_router
 from app.routers import requisitos
 from app.routers.pases import router as pases_router
 from app.routers.ciclo_lectivo import router as ciclo_lectivo_router
+from app.routers.reset_password import router as reset_password_router
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 
@@ -69,7 +70,7 @@ app.include_router(invitacion_public_router)
 app.include_router(usuario_public_router)
 app.include_router(preinscripcion_router)
 app.include_router(webhook_router)
-
+app.include_router(reset_password_router)
 
 # ✅ PRIVADO (con JWT)
 auth_dep = [Depends(get_current_user)]
