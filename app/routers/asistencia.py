@@ -21,12 +21,14 @@ from app.services.asistencia_service import (
     stats_lluvia_comparativo,
     alertas_inasistencias_consecutivas,
     stats_dias_semana,
-    stats_alumnos_por_rango,      
+    stats_alumnos_por_rango,
     upsert_asistencias_por_curso_fecha,
     upsert_asistencias_por_curso_rango,
-    get_notificaciones_docente, 
+    get_notificaciones_docente,
     revisar_certificado,
-    stats_motivos_ausencia
+    stats_motivos_ausencia,
+    get_notificaciones_docente_por_usuario,
+    get_notificaciones_docente_historial,
 )
 from app.services.whatsapp_service import enviar_plantilla_inasistencia
 from app.schemas.asistencia_bulk_curso import AsistenciaCursoFechaBulkRequest, AsistenciaCursoRangoBulkRequest
@@ -95,15 +97,9 @@ def read_stats_resumen(
 ):
     cursos = cursoIds if cursoIds is not None else curso_ids
     umb = umbral if umbral is not None else umbral_riesgo
-
     return stats_resumen(
-        db=session,
-        cue=cue,
-        desde=desde,
-        hasta=hasta,
-        curso_ids=cursos,
-        umbral_riesgo=umb,
-        solo_lluvia=soloLluvia,
+        db=session, cue=cue, desde=desde, hasta=hasta,
+        curso_ids=cursos, umbral_riesgo=umb, solo_lluvia=soloLluvia,
     )
 
 
@@ -118,13 +114,8 @@ def read_stats_serie(
     solo_lluvia: Optional[bool] = Query(default=None, alias="soloLluvia"),
 ):
     return stats_serie(
-        db=session,
-        cue=cue,
-        desde=desde,
-        hasta=hasta,
-        group_by=group_by,
-        curso_ids=curso_ids,
-        solo_lluvia=solo_lluvia,
+        db=session, cue=cue, desde=desde, hasta=hasta,
+        group_by=group_by, curso_ids=curso_ids, solo_lluvia=solo_lluvia,
     )
 
 
@@ -138,14 +129,10 @@ def read_stats_distribucion(
     curso_ids: Optional[list[int]] = Query(default=None),
 ):
     cursos = cursoIds if cursoIds is not None else curso_ids
-
     return stats_distribucion_inasistencias(
-        db=session,
-        cue=cue,
-        desde=desde,
-        hasta=hasta,
-        curso_ids=cursos,
+        db=session, cue=cue, desde=desde, hasta=hasta, curso_ids=cursos,
     )
+
 
 @router.get("/stats/motivos")
 def read_stats_motivos(
@@ -159,9 +146,9 @@ def read_stats_motivos(
 ):
     cursos = cursoIds if cursoIds is not None else curso_ids
     return stats_motivos_ausencia(
-        db=session, cue=cue, desde=desde, hasta=hasta,
-        curso_ids=cursos, top_n=topN,
+        db=session, cue=cue, desde=desde, hasta=hasta, curso_ids=cursos, top_n=topN,
     )
+
 
 @router.get("/stats/riesgo")
 def read_stats_riesgo_por_curso(
@@ -174,14 +161,8 @@ def read_stats_riesgo_por_curso(
     curso_ids: Optional[list[int]] = Query(default=None),
 ):
     cursos = cursoIds if cursoIds is not None else curso_ids
-
     return stats_riesgo_por_curso(
-        db=session,
-        cue=cue,
-        desde=desde,
-        hasta=hasta,
-        umbral=umbral,
-        curso_ids=cursos,
+        db=session, cue=cue, desde=desde, hasta=hasta, umbral=umbral, curso_ids=cursos,
     )
 
 
@@ -195,13 +176,8 @@ def read_stats_lluvia(
     curso_ids: Optional[list[int]] = Query(default=None),
 ):
     cursos = cursoIds if cursoIds is not None else curso_ids
-
     return stats_lluvia_comparativo(
-        db=session,
-        cue=cue,
-        desde=desde,
-        hasta=hasta,
-        curso_ids=cursos,
+        db=session, cue=cue, desde=desde, hasta=hasta, curso_ids=cursos,
     )
 
 
@@ -216,14 +192,9 @@ def read_stats_dias_semana(
     soloLluvia: Optional[bool] = Query(default=None),
 ):
     cursos = cursoIds if cursoIds is not None else curso_ids
-
     return stats_dias_semana(
-        db=session,
-        cue=cue,
-        desde=desde,
-        hasta=hasta,
-        curso_ids=cursos,
-        solo_lluvia=soloLluvia,
+        db=session, cue=cue, desde=desde, hasta=hasta,
+        curso_ids=cursos, solo_lluvia=soloLluvia,
     )
 
 
@@ -238,14 +209,8 @@ def read_stats_alumnos_por_rango(
     curso_ids: Optional[list[int]] = Query(default=None),
 ):
     cursos = cursoIds if cursoIds is not None else curso_ids
-
     return stats_alumnos_por_rango(
-        db=session,
-        cue=cue,
-        desde=desde,
-        hasta=hasta,
-        rango=rango,
-        curso_ids=cursos,
+        db=session, cue=cue, desde=desde, hasta=hasta, rango=rango, curso_ids=cursos,
     )
 
 
@@ -262,11 +227,44 @@ def read_alertas_inasistencias_consecutivas(
     min: int = Query(default=3, ge=2, le=30),
 ):
     return alertas_inasistencias_consecutivas(
+        db=session, cue=cue, desde=desde, hasta=hasta, min_consecutivas=min,
+    )
+
+
+# ==========================
+# Notificaciones del docente
+# ⚠️ DEBEN ir ANTES de /{idCurso}/{fecha} para evitar conflictos de rutas
+# ==========================
+
+@router.get(
+    "/docente/notificaciones",
+    response_model=list[NotificacionDocente],
+    summary="Notificaciones de todos los cursos del docente",
+)
+def read_notificaciones_docente_por_usuario(
+    session: SessionDep,
+    current_user: Usuario = Depends(get_current_user),
+):
+    return get_notificaciones_docente_por_usuario(
         db=session,
-        cue=cue,
-        desde=desde,
-        hasta=hasta,
-        min_consecutivas=min,
+        idUsuario=current_user.idUsuario,
+    )
+
+
+@router.get(
+    "/docente/notificaciones/historial",
+    response_model=list[NotificacionDocente],
+    summary="Historial de notificaciones del docente (últimos 30 días, todos los estados)",
+)
+def read_notificaciones_docente_historial(
+    session: SessionDep,
+    dias: int = Query(default=30, ge=1, le=365),
+    current_user: Usuario = Depends(get_current_user),
+):
+    return get_notificaciones_docente_historial(
+        db=session,
+        idUsuario=current_user.idUsuario,
+        dias=dias,
     )
 
 
@@ -297,12 +295,8 @@ def read_asistencias_by_curso_alumno(
     limit: Annotated[int, Query(le=500)] = 200,
 ):
     rows = get_asistencias_by_curso_alumno(
-        db=session,
-        idCurso=idCurso,
-        idAlumno=idAlumno,
-        anio=anio,
-        offset=offset,
-        limit=limit,
+        db=session, idCurso=idCurso, idAlumno=idAlumno,
+        anio=anio, offset=offset, limit=limit,
     )
     return [_to_read(r) for r in rows]
 
@@ -323,9 +317,9 @@ def read_asistencias_by_curso(
     idCurso: int,
     session: SessionDep,
     offset: int = 0,
-    limit: Annotated[int, Query(le=10000)] = 10000,  
-    desde: Optional[date] = Query(default=None),      
-    hasta: Optional[date] = Query(default=None),      
+    limit: Annotated[int, Query(le=10000)] = 10000,
+    desde: Optional[date] = Query(default=None),
+    hasta: Optional[date] = Query(default=None),
 ):
     rows = get_asistencias_by_curso(db=session, idCurso=idCurso, offset=offset, limit=limit)
     return [_to_read(r) for r in rows]
@@ -367,15 +361,10 @@ async def cargar_asistencia_curso_bulk_fecha(
     current_user: Usuario = Depends(get_current_user),
 ):
     overrides = [(o.idAlumno, o.estado, o.lluvia) for o in payload.overrides]
-
     return await upsert_asistencias_por_curso_fecha(
-        db=session,
-        idCurso=idCurso,
-        fecha=payload.fecha,
-        default_estado=payload.default_estado,
-        lluvia=payload.lluvia,
-        overrides=overrides,
-        bg=background_tasks,
+        db=session, idCurso=idCurso, fecha=payload.fecha,
+        default_estado=payload.default_estado, lluvia=payload.lluvia,
+        overrides=overrides, bg=background_tasks,
     )
 
 
@@ -388,43 +377,29 @@ async def cargar_asistencia_curso_bulk_rango(
     current_user: Usuario = Depends(get_current_user),
 ):
     overrides = [(o.idAlumno, o.estado, o.lluvia) for o in payload.overrides]
-
     total = await upsert_asistencias_por_curso_rango(
-        db=session,
-        idCurso=idCurso,
-        desde=payload.desde,
-        hasta=payload.hasta,
-        weekdays=payload.weekdays,
-        default_estado=payload.default_estado,
-        lluvia=payload.lluvia,
-        overrides=overrides,
-        solo_alumnos=payload.solo_alumnos,
-        bg=background_tasks,
+        db=session, idCurso=idCurso, desde=payload.desde, hasta=payload.hasta,
+        weekdays=payload.weekdays, default_estado=payload.default_estado,
+        lluvia=payload.lluvia, overrides=overrides,
+        solo_alumnos=payload.solo_alumnos, bg=background_tasks,
     )
     return {"ok": True, "registros": total}
 
 
 # ==========================
-# Notificaciones del docente
+# Notificaciones por curso (legacy)
 # ==========================
 
 @router.get(
     "/cursos/{idCurso}/notificaciones-docente",
     response_model=list[NotificacionDocente],
-    summary="Notificaciones de respuestas WPP para la campanita del docente",
+    summary="Notificaciones de respuestas WPP para la campanita del docente (por curso)",
 )
 def read_notificaciones_docente(
     idCurso: int,
     session: SessionDep,
     current_user: Usuario = Depends(get_current_user),
 ):
-    """
-    Devuelve las inasistencias del curso donde el padre ya respondió
-    (motivo_ausencia != null), ordenadas por prioridad:
-      1. Certificados pendientes de revisión
-      2. Respuestas sin certificado
-      3. Certificados ya revisados
-    """
     return get_notificaciones_docente(db=session, idCurso=idCurso)
 
 
@@ -445,19 +420,8 @@ def patch_certificado(
     session:  SessionDep,
     current_user: Usuario = Depends(get_current_user),
 ):
-    """
-    El docente aprueba o rechaza el certificado médico adjunto a una inasistencia.
-
-    - **aprobado** + dias_justificacion: marca como Justificado todas las
-      inasistencias del alumno en ese curso entre `fecha` y `fecha + dias - 1`.
-    - **rechazado**: solo cambia el estado del certificado, sin tocar las inasistencias.
-    """
     row = revisar_certificado(
-        db=session,
-        idCurso=idCurso,
-        idAlumno=idAlumno,
-        fecha=fecha,
-        payload=payload,
-        revisado_por_id=current_user.idUsuario,
+        db=session, idCurso=idCurso, idAlumno=idAlumno,
+        fecha=fecha, payload=payload, revisado_por_id=current_user.idUsuario,
     )
     return _to_read(row)

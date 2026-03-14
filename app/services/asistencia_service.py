@@ -14,6 +14,7 @@ from app.db.database import engine
 from app.models.asistencia import Asistencia
 from app.models.alumno import Alumno
 from app.models.curso import Curso
+from app.models.curso_docente import CursoDocente
 from app.services.curso_service import get_one_curso
 from app.schemas.asistencia import AsistenciaCreate, AsistenciaEstado
 from app.schemas.asistencia import CertificadoRevisionRequest, CertificadoEstado, NotificacionDocente
@@ -400,6 +401,174 @@ async def upsert_asistencias_bulk(
 # ==========================
 # Reads
 # ==========================
+def get_notificaciones_docente_por_usuario(
+    db: SessionDep,
+    idUsuario: int,
+) -> list[NotificacionDocente]:
+    """
+    Trae notificaciones de TODOS los cursos activos del docente,
+    no solo del curso activo en el localStorage.
+    """
+    # 1. Obtener todos los cursos activos del docente
+    stmt_cursos = select(CursoDocente.idCurso).where(
+        CursoDocente.idUsuario == idUsuario,
+        CursoDocente.estado    == "Activo",
+    )
+    cursos_ids = list(db.exec(stmt_cursos).all())
+ 
+    if not cursos_ids:
+        return []
+ 
+    # 2. Traer todas las asistencias con respuesta de WPP de esos cursos
+    desde = date.today() - timedelta(days=30)
+    stmt = (
+        select(
+            Asistencia,
+            Alumno.nombre.label("alumno_nombre"),
+            Alumno.apellido.label("alumno_apellido"),
+            Curso.nombre.label("curso_nombre"),
+            Curso.division.label("curso_division"),
+            Curso.cicloLectivo.label("ciclo_lectivo"),
+        )
+        .join(Alumno, Alumno.idAlumno == Asistencia.idAlumno)
+        .join(Curso,  Curso.idCurso   == Asistencia.idCurso)
+        .where(
+            Asistencia.idCurso.in_(cursos_ids),
+            Asistencia.motivo_ausencia != None,
+            Asistencia.fecha >= desde,
+        )
+        .order_by(Asistencia.fecha.desc())
+    )
+ 
+    rows = db.exec(stmt).all()
+    resultado: list[NotificacionDocente] = []
+ 
+    for row in rows:
+        asistencia: Asistencia = row[0]
+        alumno_nombre = f"{row.alumno_apellido}, {row.alumno_nombre}"
+        curso_str     = f"{row.curso_nombre} {row.curso_division} ({row.ciclo_lectivo})"
+ 
+        if asistencia.certificado_estado in (
+            CertificadoEstado.aprobado, CertificadoEstado.rechazado
+        ):
+            tipo = "certificado_revisado"
+        elif asistencia.certificado_path and (
+            asistencia.certificado_estado == CertificadoEstado.pendiente
+            or asistencia.certificado_estado is None
+        ):
+            tipo = "certificado_pendiente"
+        else:
+            tipo = "respuesta"
+ 
+        resultado.append(
+            NotificacionDocente(
+                idCurso=asistencia.idCurso,
+                idAlumno=asistencia.idAlumno,
+                fecha=asistencia.fecha,
+                alumnoNombre=alumno_nombre,
+                curso=curso_str,
+                motivo_ausencia=asistencia.motivo_ausencia,
+                certificado_path=asistencia.certificado_path,
+                certificado_estado=(
+                    asistencia.certificado_estado.value
+                    if asistencia.certificado_estado else None
+                ),
+                justificado_hasta=asistencia.justificado_hasta,
+                tipo_notif=tipo,
+            )
+        )
+ 
+    orden = {"certificado_pendiente": 0, "respuesta": 1, "certificado_revisado": 2}
+    resultado.sort(key=lambda n: orden.get(n.tipo_notif, 9))
+ 
+    return resultado
+
+def get_notificaciones_docente_historial(
+    db: SessionDep,
+    idUsuario: int,
+    dias: int = 30,
+) -> list[NotificacionDocente]:
+    """
+    Historial completo de notificaciones del docente:
+    - Todos sus cursos activos
+    - Últimos `dias` días
+    - Cualquier estado (Ausente, Justificado, etc.)
+    - Solo registros donde el padre respondió (motivo_ausencia != None)
+    """
+    desde = date.today() - timedelta(days=dias)
+ 
+    # Cursos activos del docente
+    stmt_cursos = select(CursoDocente.idCurso).where(
+        CursoDocente.idUsuario == idUsuario,
+        CursoDocente.estado    == "Activo",
+    )
+    cursos_ids = list(db.exec(stmt_cursos).all())
+ 
+    if not cursos_ids:
+        return []
+ 
+    stmt = (
+        select(
+            Asistencia,
+            Alumno.nombre.label("alumno_nombre"),
+            Alumno.apellido.label("alumno_apellido"),
+            Curso.nombre.label("curso_nombre"),
+            Curso.division.label("curso_division"),
+            Curso.cicloLectivo.label("ciclo_lectivo"),
+        )
+        .join(Alumno, Alumno.idAlumno == Asistencia.idAlumno)
+        .join(Curso,  Curso.idCurso   == Asistencia.idCurso)
+        .where(
+            Asistencia.idCurso.in_(cursos_ids),
+            Asistencia.motivo_ausencia != None,   # padre respondió
+            Asistencia.fecha >= desde,
+        )
+        .order_by(Asistencia.fecha.desc())
+    )
+ 
+    rows = db.exec(stmt).all()
+    resultado: list[NotificacionDocente] = []
+ 
+    for row in rows:
+        asistencia: Asistencia = row[0]
+        alumno_nombre = f"{row.alumno_apellido}, {row.alumno_nombre}"
+        curso_str     = f"{row.curso_nombre} {row.curso_division} ({row.ciclo_lectivo})"
+ 
+        if asistencia.certificado_estado in (
+            CertificadoEstado.aprobado, CertificadoEstado.rechazado
+        ):
+            tipo = "certificado_revisado"
+        elif asistencia.certificado_path and (
+            asistencia.certificado_estado == CertificadoEstado.pendiente
+            or asistencia.certificado_estado is None
+        ):
+            tipo = "certificado_pendiente"
+        else:
+            tipo = "respuesta"
+ 
+        resultado.append(
+            NotificacionDocente(
+                idCurso=asistencia.idCurso,
+                idAlumno=asistencia.idAlumno,
+                fecha=asistencia.fecha,
+                alumnoNombre=alumno_nombre,
+                curso=curso_str,
+                motivo_ausencia=asistencia.motivo_ausencia,
+                certificado_path=asistencia.certificado_path,
+                certificado_estado=(
+                    asistencia.certificado_estado.value
+                    if asistencia.certificado_estado else None
+                ),
+                justificado_hasta=asistencia.justificado_hasta,
+                tipo_notif=tipo,
+            )
+        )
+ 
+    orden = {"certificado_pendiente": 0, "respuesta": 1, "certificado_revisado": 2}
+    resultado.sort(key=lambda n: orden.get(n.tipo_notif, 9))
+ 
+    return resultado
+
 
 def get_asistencias_by_curso_fecha(db: SessionDep, idCurso: int, fecha: date):
     ensure_curso_exists(db, idCurso)
