@@ -770,7 +770,7 @@ def stats_resumen(
             "riesgoPct": riesgo_pct,
             "totalAlumnosEscuela": total_alumnos_escuela,
         },
-        "topCursosAusentismo": cursos_out[:5],
+        "topCursosAusentismo": cursos_out,
     }
 
 
