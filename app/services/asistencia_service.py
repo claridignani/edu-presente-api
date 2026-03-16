@@ -410,6 +410,7 @@ def get_notificaciones_docente_por_usuario(
     no solo del curso activo en el localStorage.
     """
     # 1. Obtener todos los cursos activos del docente
+    
     stmt_cursos = select(CursoDocente.idCurso).where(
         CursoDocente.idUsuario == idUsuario,
         CursoDocente.estado    == "Activo",
@@ -441,6 +442,11 @@ def get_notificaciones_docente_por_usuario(
     )
  
     rows = db.exec(stmt).all()
+    print(f"DEBUG cursos_ids del docente: {cursos_ids}")
+    for row in rows:
+        asistencia = row[0]
+        print(f"DEBUG row: idCurso={asistencia.idCurso} idAlumno={asistencia.idAlumno} fecha={asistencia.fecha}")
+
     resultado: list[NotificacionDocente] = []
  
     for row in rows:

@@ -225,6 +225,36 @@ def get_historial_alumno(
     idAlumno: int,
     session: SessionDep,
     cue: str = Query(...),
-    current_user: Usuario = Depends(require_access_to_cue_param(ALLOWED_ALERTAS)),
+    current_user: Usuario = Depends(get_current_user),
 ):
-    return get_historial_alertas_por_alumno(db=session, idAlumno=idAlumno, cue=cue)
+    from app.models.rol import Rol  # ya lo importás arriba, solo por claridad
+
+    # Obtener el rol del usuario para este CUE
+    stmt_rol = sql_select(Rol).where(
+        Rol.idUsuario == current_user.idUsuario,
+        Rol.CUE == cue,
+        Rol.estado == "Activo",
+    ).limit(1)
+    rol_obj = session.exec(stmt_rol).first()
+
+    if not rol_obj:
+        raise HTTPException(status_code=403, detail="No autorizado")
+
+    rol = rol_obj.descripcion  # RolDescripcion enum
+
+    roles_completos = {RolDescripcion.Director, RolDescripcion.Asistente, RolDescripcion.Administrador}
+
+    if rol in roles_completos:
+        return get_historial_alertas_por_alumno(db=session, idAlumno=idAlumno, cue=cue)
+
+    if rol == RolDescripcion.Docente:
+        cursos_docente = _get_cursos_docente(session, current_user.idUsuario)
+        alumno_en_mis_cursos = any(
+            _alumno_en_curso(session, idAlumno, idCurso)
+            for idCurso in cursos_docente
+        )
+        if not alumno_en_mis_cursos:
+            raise HTTPException(status_code=403, detail="El alumno no pertenece a tus cursos.")
+        return get_historial_alertas_por_alumno(db=session, idAlumno=idAlumno, cue=cue)
+
+    raise HTTPException(status_code=403, detail="No autorizado")
