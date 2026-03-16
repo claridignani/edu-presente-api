@@ -52,6 +52,9 @@ def _to_read(r) -> AsistenciaRead:
         wamid=r.wamid,
         motivo_ausencia=r.motivo_ausencia,
         certificado_path=r.certificado_path,
+        certificado_estado=r.certificado_estado,   
+        justificado_hasta=r.justificado_hasta,     
+        revisado_por=r.revisado_por,               
     )
 
 

@@ -67,30 +67,6 @@ def ensure_alumnos_exist(db: SessionDep, ids_alumnos: Iterable[int]):
         raise HTTPException(status_code=404, detail=f"Alumnos inexistentes: {faltantes}")
 
 
-def _get_justificacion_activa(
-    db: SessionDep,
-    idAlumno: int,
-    idCurso: int,
-    fecha: date,
-) -> Optional[Asistencia]:
-    """
-    Busca si existe una inasistencia anterior del mismo alumno en el mismo curso
-    cuyo certificado fue aprobado y cuyo rango justificado_hasta >= fecha.
-
-    Si la encuentra, significa que esta nueva falta ya está cubierta por esa
-    justificación médica y debe crearse/actualizarse como Justificado.
-    """
-    stmt = select(Asistencia).where(
-        Asistencia.idAlumno           == idAlumno,
-        Asistencia.idCurso            == idCurso,
-        Asistencia.certificado_estado == CertificadoEstado.aprobado,
-        Asistencia.justificado_hasta  >= fecha,
-        Asistencia.fecha              <= fecha,
-    ).order_by(Asistencia.fecha.desc()).limit(1)
-
-    return db.exec(stmt).first()
-
-
 # ==========================
 # Helpers internos: disparar las 4 alertas automáticas
 # ==========================
@@ -203,40 +179,28 @@ async def upsert_asistencia(
 ) -> Asistencia:
     ensure_curso_exists(db, payload.idCurso)
     alumno = ensure_alumno_exists(db, payload.idAlumno)
- 
+
     existente = get_one_asistencia(db, payload.idCurso, payload.idAlumno, payload.fecha)
- 
-    # ── Auto-justificación: si hay una justificación activa que cubre esta fecha ──
+
+    # El estado siempre respeta lo que mandó el docente — sin auto-justificación.
+    # La justificación se maneja exclusivamente a través de certificado_estado y justificado_hasta.
     estado_final = payload.estado
-    if payload.estado == AsistenciaEstado.Ausente:
-        justif = _get_justificacion_activa(
-            db, payload.idAlumno, payload.idCurso, payload.fecha
-        )
-        if justif:
-            estado_final = AsistenciaEstado.Justificado
-            # Heredar motivo de ausencia de la justificación origen
-            if justif.motivo_ausencia and not payload.motivo_ausencia:
-                payload = payload.model_copy(
-                    update={"motivo_ausencia": justif.motivo_ausencia}
-                )
- 
+
     if existente:
         ya_notificado = bool(existente.wamid)
         existente.estado = estado_final
         existente.lluvia = payload.lluvia
         if payload.wamid:
             existente.wamid = payload.wamid
-        # Heredar motivo si el existente no tiene uno
         if payload.motivo_ausencia and not existente.motivo_ausencia:
             existente.motivo_ausencia = payload.motivo_ausencia
         db.add(existente)
         db.commit()
         db.refresh(existente)
- 
+
         if estado_final in (AsistenciaEstado.Ausente, AsistenciaEstado.Tarde):
             _disparar_alertas_automaticas(db, existente.idCurso, existente.fecha, estado_final)
- 
-        # Solo notificar por WPP si sigue siendo Ausente (no justificado)
+
         if estado_final == AsistenciaEstado.Ausente and not ya_notificado:
             datos = _cargar_datos_whatsapp(db, [alumno.idAlumno], {alumno.idAlumno: alumno})
             for d in datos:
@@ -245,18 +209,17 @@ async def upsert_asistencia(
                 d["fecha"]    = existente.fecha
             if datos:
                 bg.add_task(_bg_enviar_whatsapp_y_guardar_wamid, datos)
- 
+
         return existente
- 
+
     nueva = Asistencia.model_validate({**payload.model_dump(), "estado": estado_final})
     db.add(nueva)
     db.commit()
     db.refresh(nueva)
- 
+
     if estado_final in (AsistenciaEstado.Ausente, AsistenciaEstado.Tarde):
         _disparar_alertas_automaticas(db, nueva.idCurso, nueva.fecha, estado_final)
- 
-    # Solo notificar por WPP si sigue siendo Ausente (no justificado)
+
     if estado_final == AsistenciaEstado.Ausente:
         datos = _cargar_datos_whatsapp(db, [alumno.idAlumno], {alumno.idAlumno: alumno})
         for d in datos:
@@ -265,7 +228,7 @@ async def upsert_asistencia(
             d["fecha"]    = nueva.fecha
         if datos:
             bg.add_task(_bg_enviar_whatsapp_y_guardar_wamid, datos)
- 
+
     return nueva
 
 
@@ -280,18 +243,19 @@ async def upsert_asistencias_bulk(
 ) -> list[Asistencia]:
     if not payloads:
         return []
- 
+
     cursos_ids = list({p.idCurso for p in payloads})
     for cid in cursos_ids:
         ensure_curso_exists(db, cid)
     ensure_alumnos_exist(db, [p.idAlumno for p in payloads])
- 
+
+    # Determinar ausentes que aún no fueron notificados por WPP
     ausentes_ids_total = list({p.idAlumno for p in payloads if p.estado == "Ausente"})
     alumnos_map: dict[int, Alumno] = {}
     if ausentes_ids_total:
         stmt_a = select(Alumno).where(Alumno.idAlumno.in_(ausentes_ids_total))
         alumnos_map = {a.idAlumno: a for a in db.exec(stmt_a).all()}
- 
+
     ausentes_ya_notificados: set[int] = set()
     if ausentes_ids_total:
         primera_idCurso = next(p.idCurso for p in payloads if p.estado == "Ausente")
@@ -304,32 +268,10 @@ async def upsert_asistencias_bulk(
             Asistencia.wamid   != "",
         )
         ausentes_ya_notificados = set(db.exec(stmt_wamids).all())
- 
+
     ausentes_ids = [i for i in ausentes_ids_total if i not in ausentes_ya_notificados]
- 
-    # ── Auto-justificación: detectar alumnos con justificación activa ──────
-    fecha_bulk_ref   = payloads[0].fecha
-    idCurso_bulk_ref = payloads[0].idCurso
- 
-    justificaciones_activas: set[int] = set()
-    justif_map: dict[int, Asistencia] = {}  # para heredar motivo_ausencia
-    if ausentes_ids_total:
-        stmt_justif = select(Asistencia).where(
-            Asistencia.idAlumno.in_(ausentes_ids_total),
-            Asistencia.idCurso            == idCurso_bulk_ref,
-            Asistencia.certificado_estado == CertificadoEstado.aprobado,
-            Asistencia.justificado_hasta  >= fecha_bulk_ref,
-            Asistencia.fecha              <= fecha_bulk_ref,
-        )
-        for row in db.exec(stmt_justif).all():
-            justificaciones_activas.add(row.idAlumno)
-            if row.idAlumno not in justif_map:  # quedarse con la más reciente
-                justif_map[row.idAlumno] = row
- 
-    # Excluir de WPP a los que van a quedar auto-justificados
-    ausentes_ids = [i for i in ausentes_ids if i not in justificaciones_activas]
     datos_envio = _cargar_datos_whatsapp(db, ausentes_ids, alumnos_map)
- 
+
     fecha = payloads[0].fecha
     alumno_ids = [p.idAlumno for p in payloads]
     existentes_map = {
@@ -342,65 +284,52 @@ async def upsert_asistencias_bulk(
             )
         ).all()
     }
- 
+
     out: list[Asistencia] = []
     for p in payloads:
-        # Auto-justificación por certificado activo
-        estado_final = (
-            AsistenciaEstado.Justificado
-            if p.estado == AsistenciaEstado.Ausente and p.idAlumno in justificaciones_activas
-            else p.estado
-        )
- 
-        # Heredar motivo_ausencia de la justificación origen
-        motivo_heredado: str | None = None
-        if estado_final == AsistenciaEstado.Justificado:
-            justif_origen = justif_map.get(p.idAlumno)
-            if justif_origen:
-                motivo_heredado = justif_origen.motivo_ausencia
- 
+        # El estado siempre respeta lo que mandó el docente — sin auto-justificación.
+        estado_final = p.estado
+
         existente = existentes_map.get((p.idCurso, p.idAlumno))
         if existente:
             existente.estado = estado_final
             existente.lluvia = p.lluvia
-            if motivo_heredado and not existente.motivo_ausencia:
-                existente.motivo_ausencia = motivo_heredado
+            if p.motivo_ausencia and not existente.motivo_ausencia:
+                existente.motivo_ausencia = p.motivo_ausencia
             db.add(existente)
             out.append(existente)
         else:
-            data = {**p.model_dump(), "estado": estado_final}
-            if motivo_heredado:
-                data["motivo_ausencia"] = motivo_heredado
-            nueva = Asistencia.model_validate(data)
+            nueva = Asistencia.model_validate(p.model_dump())
             db.add(nueva)
             out.append(nueva)
- 
+
     db.commit()
- 
-    # Disparar alertas solo para Ausente/Tarde (no Justificado)
+
+    # Disparar alertas para Ausente/Tarde
     estados_en_bulk = {p.estado for p in payloads if p.estado in ("Ausente", "Tarde")}
     idCurso_bulk = out[0].idCurso
     fecha_bulk   = out[0].fecha
- 
+
     for estado_bulk in estados_en_bulk:
         _disparar_alertas_automaticas(db, idCurso_bulk, fecha_bulk, estado_bulk)
- 
+
     ausentes_rows = {row.idAlumno: row for row in out if row.idAlumno in ausentes_ids}
     for d in datos_envio:
         row = ausentes_rows.get(d["idAlumno"])
         if row:
             d["idCurso"] = row.idCurso
             d["fecha"]   = row.fecha
- 
+
     if datos_envio:
         bg.add_task(_bg_enviar_whatsapp_y_guardar_wamid, datos_envio)
- 
+
     return out
 
 
 # ==========================
 # Reads
 # ==========================
+
 def get_notificaciones_docente_por_usuario(
     db: SessionDep,
     idUsuario: int,
@@ -409,18 +338,15 @@ def get_notificaciones_docente_por_usuario(
     Trae notificaciones de TODOS los cursos activos del docente,
     no solo del curso activo en el localStorage.
     """
-    # 1. Obtener todos los cursos activos del docente
-    
     stmt_cursos = select(CursoDocente.idCurso).where(
         CursoDocente.idUsuario == idUsuario,
         CursoDocente.estado    == "Activo",
     )
     cursos_ids = list(db.exec(stmt_cursos).all())
- 
+
     if not cursos_ids:
         return []
- 
-    # 2. Traer todas las asistencias con respuesta de WPP de esos cursos
+
     desde = date.today() - timedelta(days=30)
     stmt = (
         select(
@@ -440,20 +366,16 @@ def get_notificaciones_docente_por_usuario(
         )
         .order_by(Asistencia.fecha.desc())
     )
- 
+
     rows = db.exec(stmt).all()
-    print(f"DEBUG cursos_ids del docente: {cursos_ids}")
-    for row in rows:
-        asistencia = row[0]
-        print(f"DEBUG row: idCurso={asistencia.idCurso} idAlumno={asistencia.idAlumno} fecha={asistencia.fecha}")
 
     resultado: list[NotificacionDocente] = []
- 
+
     for row in rows:
         asistencia: Asistencia = row[0]
         alumno_nombre = f"{row.alumno_apellido}, {row.alumno_nombre}"
         curso_str     = f"{row.curso_nombre} {row.curso_division} ({row.ciclo_lectivo})"
- 
+
         if asistencia.certificado_estado in (
             CertificadoEstado.aprobado, CertificadoEstado.rechazado
         ):
@@ -465,7 +387,7 @@ def get_notificaciones_docente_por_usuario(
             tipo = "certificado_pendiente"
         else:
             tipo = "respuesta"
- 
+
         resultado.append(
             NotificacionDocente(
                 idCurso=asistencia.idCurso,
@@ -483,11 +405,12 @@ def get_notificaciones_docente_por_usuario(
                 tipo_notif=tipo,
             )
         )
- 
+
     orden = {"certificado_pendiente": 0, "respuesta": 1, "certificado_revisado": 2}
     resultado.sort(key=lambda n: orden.get(n.tipo_notif, 9))
- 
+
     return resultado
+
 
 def get_notificaciones_docente_historial(
     db: SessionDep,
@@ -498,21 +421,19 @@ def get_notificaciones_docente_historial(
     Historial completo de notificaciones del docente:
     - Todos sus cursos activos
     - Últimos `dias` días
-    - Cualquier estado (Ausente, Justificado, etc.)
     - Solo registros donde el padre respondió (motivo_ausencia != None)
     """
     desde = date.today() - timedelta(days=dias)
- 
-    # Cursos activos del docente
+
     stmt_cursos = select(CursoDocente.idCurso).where(
         CursoDocente.idUsuario == idUsuario,
         CursoDocente.estado    == "Activo",
     )
     cursos_ids = list(db.exec(stmt_cursos).all())
- 
+
     if not cursos_ids:
         return []
- 
+
     stmt = (
         select(
             Asistencia,
@@ -526,20 +447,20 @@ def get_notificaciones_docente_historial(
         .join(Curso,  Curso.idCurso   == Asistencia.idCurso)
         .where(
             Asistencia.idCurso.in_(cursos_ids),
-            Asistencia.motivo_ausencia != None,   # padre respondió
+            Asistencia.motivo_ausencia != None,
             Asistencia.fecha >= desde,
         )
         .order_by(Asistencia.fecha.desc())
     )
- 
+
     rows = db.exec(stmt).all()
     resultado: list[NotificacionDocente] = []
- 
+
     for row in rows:
         asistencia: Asistencia = row[0]
         alumno_nombre = f"{row.alumno_apellido}, {row.alumno_nombre}"
         curso_str     = f"{row.curso_nombre} {row.curso_division} ({row.ciclo_lectivo})"
- 
+
         if asistencia.certificado_estado in (
             CertificadoEstado.aprobado, CertificadoEstado.rechazado
         ):
@@ -551,7 +472,7 @@ def get_notificaciones_docente_historial(
             tipo = "certificado_pendiente"
         else:
             tipo = "respuesta"
- 
+
         resultado.append(
             NotificacionDocente(
                 idCurso=asistencia.idCurso,
@@ -569,10 +490,10 @@ def get_notificaciones_docente_historial(
                 tipo_notif=tipo,
             )
         )
- 
+
     orden = {"certificado_pendiente": 0, "respuesta": 1, "certificado_revisado": 2}
     resultado.sort(key=lambda n: orden.get(n.tipo_notif, 9))
- 
+
     return resultado
 
 
@@ -1430,6 +1351,8 @@ def revisar_certificado(
         justificado_hasta = fecha + timedelta(days=payload.dias_justificacion - 1)
         asistencia.justificado_hasta = justificado_hasta
 
+        # Propagar justificado_hasta a todas las ausencias del rango,
+        # pero SIN cambiar el estado — siguen siendo "Ausente".
         stmt_rango = select(Asistencia).where(
             Asistencia.idCurso  == idCurso,
             Asistencia.idAlumno == idAlumno,
@@ -1440,7 +1363,8 @@ def revisar_certificado(
         inasistencias_en_rango = db.exec(stmt_rango).all()
 
         for inasistencia in inasistencias_en_rango:
-            inasistencia.estado = AsistenciaEstado.Justificado
+            inasistencia.justificado_hasta = justificado_hasta
+            # estado se mantiene como "Ausente" — no se toca
             db.add(inasistencia)
 
     db.add(asistencia)
