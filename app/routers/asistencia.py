@@ -2,7 +2,7 @@
 from datetime import date
 from typing import Annotated, Optional
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Depends
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Depends, Response
 
 from app.dependencies import SessionDep
 from app.schemas.asistencia import AsistenciaCreate, AsistenciaPublic, AsistenciaRead, CertificadoRevisionRequest, NotificacionDocente
@@ -37,6 +37,9 @@ from app.models.usuario import Usuario
 
 router = APIRouter(prefix="/asistencias", tags=["Asistencias"])
 
+# TTL para cache de estadísticas (5 minutos)
+_STATS_CACHE_TTL = 300
+
 
 # ==========================
 # Helpers
@@ -56,6 +59,11 @@ def _to_read(r) -> AsistenciaRead:
         justificado_hasta=r.justificado_hasta,     
         revisado_por=r.revisado_por,               
     )
+
+
+def _set_cache_headers(response: Response) -> None:
+    """Aplica headers de cache privado de 5 minutos a la respuesta."""
+    response.headers["Cache-Control"] = f"private, max-age={_STATS_CACHE_TTL}"
 
 
 # ==========================
@@ -88,6 +96,7 @@ async def create_or_update_asistencias_bulk(
 
 @router.get("/stats/resumen")
 def read_stats_resumen(
+    response: Response,
     session: SessionDep,
     cue: str,
     desde: date,
@@ -98,6 +107,7 @@ def read_stats_resumen(
     umbral_riesgo: int = Query(default=20, ge=1),
     soloLluvia: Optional[bool] = Query(default=None),
 ):
+    _set_cache_headers(response)
     cursos = cursoIds if cursoIds is not None else curso_ids
     umb = umbral if umbral is not None else umbral_riesgo
     return stats_resumen(
@@ -108,6 +118,7 @@ def read_stats_resumen(
 
 @router.get("/stats/serie")
 def read_stats_serie(
+    response: Response,
     session: SessionDep,
     cue: str,
     desde: date,
@@ -116,6 +127,7 @@ def read_stats_serie(
     curso_ids: Optional[list[int]] = Query(default=None, alias="cursoIds"),
     solo_lluvia: Optional[bool] = Query(default=None, alias="soloLluvia"),
 ):
+    _set_cache_headers(response)
     return stats_serie(
         db=session, cue=cue, desde=desde, hasta=hasta,
         group_by=group_by, curso_ids=curso_ids, solo_lluvia=solo_lluvia,
@@ -124,6 +136,7 @@ def read_stats_serie(
 
 @router.get("/stats/distribucion")
 def read_stats_distribucion(
+    response: Response,
     session: SessionDep,
     cue: str,
     desde: date,
@@ -131,6 +144,7 @@ def read_stats_distribucion(
     cursoIds: Optional[list[int]] = Query(default=None),
     curso_ids: Optional[list[int]] = Query(default=None),
 ):
+    _set_cache_headers(response)
     cursos = cursoIds if cursoIds is not None else curso_ids
     return stats_distribucion_inasistencias(
         db=session, cue=cue, desde=desde, hasta=hasta, curso_ids=cursos,
@@ -139,6 +153,7 @@ def read_stats_distribucion(
 
 @router.get("/stats/motivos")
 def read_stats_motivos(
+    response: Response,
     session: SessionDep,
     cue: str,
     desde: date,
@@ -147,6 +162,7 @@ def read_stats_motivos(
     curso_ids: Optional[list[int]] = Query(default=None),
     topN: int = Query(default=10, ge=1, le=50),
 ):
+    _set_cache_headers(response)
     cursos = cursoIds if cursoIds is not None else curso_ids
     return stats_motivos_ausencia(
         db=session, cue=cue, desde=desde, hasta=hasta, curso_ids=cursos, top_n=topN,
@@ -155,6 +171,7 @@ def read_stats_motivos(
 
 @router.get("/stats/riesgo")
 def read_stats_riesgo_por_curso(
+    response: Response,
     session: SessionDep,
     cue: str,
     desde: date,
@@ -163,6 +180,7 @@ def read_stats_riesgo_por_curso(
     cursoIds: Optional[list[int]] = Query(default=None),
     curso_ids: Optional[list[int]] = Query(default=None),
 ):
+    _set_cache_headers(response)
     cursos = cursoIds if cursoIds is not None else curso_ids
     return stats_riesgo_por_curso(
         db=session, cue=cue, desde=desde, hasta=hasta, umbral=umbral, curso_ids=cursos,
@@ -171,6 +189,7 @@ def read_stats_riesgo_por_curso(
 
 @router.get("/stats/lluvia")
 def read_stats_lluvia(
+    response: Response,
     session: SessionDep,
     cue: str,
     desde: date,
@@ -178,6 +197,7 @@ def read_stats_lluvia(
     cursoIds: Optional[list[int]] = Query(default=None),
     curso_ids: Optional[list[int]] = Query(default=None),
 ):
+    _set_cache_headers(response)
     cursos = cursoIds if cursoIds is not None else curso_ids
     return stats_lluvia_comparativo(
         db=session, cue=cue, desde=desde, hasta=hasta, curso_ids=cursos,
@@ -186,6 +206,7 @@ def read_stats_lluvia(
 
 @router.get("/stats/dias-semana")
 def read_stats_dias_semana(
+    response: Response,
     session: SessionDep,
     cue: str,
     desde: date,
@@ -194,6 +215,7 @@ def read_stats_dias_semana(
     curso_ids: Optional[list[int]] = Query(default=None),
     soloLluvia: Optional[bool] = Query(default=None),
 ):
+    _set_cache_headers(response)
     cursos = cursoIds if cursoIds is not None else curso_ids
     return stats_dias_semana(
         db=session, cue=cue, desde=desde, hasta=hasta,
@@ -211,6 +233,7 @@ def read_stats_alumnos_por_rango(
     cursoIds: Optional[list[int]] = Query(default=None),
     curso_ids: Optional[list[int]] = Query(default=None),
 ):
+    # Sin cache — es interactivo
     cursos = cursoIds if cursoIds is not None else curso_ids
     return stats_alumnos_por_rango(
         db=session, cue=cue, desde=desde, hasta=hasta, rango=rango, curso_ids=cursos,
