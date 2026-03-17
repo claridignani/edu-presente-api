@@ -312,13 +312,13 @@ async def procesar_respuesta_padre(wamid: str, motivo: str, telefono: str, db: S
 
         print(f"✅ ÉXITO: Motivo '{motivo}' registrado para la asistencia ID: {inasistencia.idAlumno}")
 
+        # Buscar el teléfono original del responsable en la DB
+        # (el mismo formato que se usó para enviar la plantilla inicial)
+        telefono_db = _obtener_telefono_responsable(db, inasistencia.idAlumno)
+        telefono_destino = telefono_db or telefono  # fallback al del webhook
+
         # Si el motivo es Enfermedad, pedir certificado médico
         if motivo == "Enfermedad":
-            # Buscar el teléfono original del responsable en la DB
-            # (el mismo formato que se usó para enviar la plantilla inicial)
-            telefono_db = _obtener_telefono_responsable(db, inasistencia.idAlumno)
-            telefono_destino = telefono_db or telefono  # fallback al del webhook
-
             wamid_texto = await enviar_mensaje_texto(
                 telefono=telefono_destino,
                 texto=(
@@ -330,6 +330,16 @@ async def procesar_respuesta_padre(wamid: str, motivo: str, telefono: str, db: S
                 print(f"📷 Solicitado certificado médico al número {telefono_destino}")
             else:
                 print(f"❌ No se pudo enviar solicitud de certificado al número {telefono_destino}")
+        else:
+            # Para otros motivos, confirmar recepción
+            wamid_texto = await enviar_mensaje_texto(
+                telefono=telefono_destino,
+                texto="✅ Recibido. ¡Gracias por informarnos!",
+            )
+            if wamid_texto:
+                print(f"✅ Confirmación enviada al número {telefono_destino}")
+            else:
+                print(f"❌ No se pudo enviar confirmación al número {telefono_destino}")
     else:
         print(f"⚠️ WAMID recibido pero no se encontró la inasistencia en la BD: {wamid}")
 
@@ -405,5 +415,17 @@ async def procesar_imagen_certificado(media_id: str, telefono: str, db: SessionD
 
     print(f"✅ Certificado médico guardado y marcado como pendiente: {filepath}")
     print(f"   Alumno ID: {inasistencia.idAlumno}, Curso: {inasistencia.idCurso}, Fecha: {inasistencia.fecha}")
+
+    # Confirmar recepción del certificado al padre
+    telefono_db = _obtener_telefono_responsable(db, inasistencia.idAlumno)
+    telefono_destino = telefono_db or telefono  # fallback al del webhook
+    wamid_conf = await enviar_mensaje_texto(
+        telefono=telefono_destino,
+        texto="✅ Certificado recibido. ¡Gracias!",
+    )
+    if wamid_conf:
+        print(f"✅ Confirmación de certificado enviada al número {telefono_destino}")
+    else:
+        print(f"❌ No se pudo enviar confirmación de certificado al número {telefono_destino}")
 
 
