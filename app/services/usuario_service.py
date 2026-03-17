@@ -1,7 +1,7 @@
 from __future__ import annotations
-from sqlalchemy import extract, and_, String
+from sqlalchemy import extract, and_, String, or_
 import re
-from datetime import datetime
+from datetime import datetime, date
 from typing import Annotated
 
 from fastapi import HTTPException, Query
@@ -282,6 +282,7 @@ def get_usuarios_by_escuela(tipo: RolDescripcion, CUE: str, db: SessionDep):
             CursoDocente.idUsuario.in_(ids),
             Curso.CUE == cue,
             CursoDocente.estado == "Activo",
+            or_(CursoDocente.fechaHasta == None, CursoDocente.fechaHasta >= date.today()),
         )
     )
     from collections import defaultdict
@@ -329,6 +330,7 @@ def get_detalle_docente(usuario_id: int, cue: str, db: SessionDep):
             CursoDocente.idUsuario == usuario_id,
             Curso.CUE == cue,
             CursoDocente.estado == "Activo",
+            or_(CursoDocente.fechaHasta == None, CursoDocente.fechaHasta >= date.today()),
         )
     )
 

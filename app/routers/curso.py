@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Annotated, List
-from datetime import date as _date, timedelta
+from datetime import date as _date, timedelta, date
 
 from fastapi import APIRouter, HTTPException, Query, Depends
 from sqlalchemy import func, or_, and_
@@ -266,6 +266,8 @@ def get_novedades_docentes(
             Curso.CUE == cue,
             CursoDocente.estado == "Activo",
             CursoDocente.tipo == "Suplente",
+            or_(CursoDocente.fechaDesde == None, CursoDocente.fechaDesde <= date.today()),
+
         )
         .order_by(CursoDocente.tipo, CursoDocente.fechaDesde)
     )
