@@ -136,7 +136,7 @@ class CursoFichaPublic(SQLModel):
 
 class DocenteFichaPublic(UsuarioPublic):
     cursos_detalle: List[CursoFichaPublic] = []
-
+    estadoRol: str = "Activo"
 
 # =========================
 # CREATE / UPDATE

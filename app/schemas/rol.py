@@ -7,7 +7,7 @@ class RolEstado(str, Enum):
     Activo = "Activo"
     Pendiente = "Pendiente"
     Rechazado = "Rechazado"
-
+    Inactivo = "Inactivo"
 
 class RolDescripcion(str, Enum):
     Director = "Director"

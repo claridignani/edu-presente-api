@@ -10,6 +10,7 @@ from sqlmodel import select
 from app.core.security import get_password_hash
 from app.core.encryption import decrypt, hash_for_search
 from app.dependencies import SessionDep
+from app.services.rol_service import get_one_rol
 
 from app.models.alumno import Alumno
 from app.models.inscriptos import Inscriptos
@@ -315,6 +316,10 @@ def get_detalle_docente(usuario_id: int, cue: str, db: SessionDep):
     user = db.get(Usuario, usuario_id)
     if not user:
         return None
+    
+    # ── estado del rol en esta escuela ──
+    rol = get_one_rol(usuario_id, cue, db)
+    estado_rol = rol.estado.value if rol else "Activo"
 
     stmt = (
         select(
@@ -356,6 +361,7 @@ def get_detalle_docente(usuario_id: int, cue: str, db: SessionDep):
         "celular": getattr(user, "celular", ""),
         "mailABC": user.mailABC,
         "cursos_detalle": lista_cursos,
+        "estadoRol": estado_rol,
     }
 
 
@@ -397,7 +403,7 @@ def get_historial_asignaciones(
 
     stmt = stmt.order_by(CursoDocente.fechaDesde.desc())
 
-    return [
+    resultado = [
         {
             "docente": f"{r[1]}, {r[0]}",
             "curso": f"{r[2]} {r[3]}",
@@ -411,6 +417,32 @@ def get_historial_asignaciones(
         for r in db.exec(stmt).all()
     ]
 
+    # ── eventos de baja desde Rol ──
+    stmt_bajas = (
+        select(Rol, Usuario)
+        .join(Usuario, Usuario.idUsuario == Rol.idUsuario)
+        .where(
+            Rol.CUE == cue,
+            Rol.fechaBaja != None,
+        )
+    )
+    if usuario_id:
+        stmt_bajas = stmt_bajas.where(Rol.idUsuario == usuario_id)
+
+    for rol, u in db.exec(stmt_bajas).all():
+        resultado.append({
+            "docente": f"{u.apellido}, {u.nombre}",
+            "curso": "—",
+            "tipo": rol.motivoBaja or "Baja",
+            "estado": "Inactivo",
+            "desde": rol.fechaBaja,
+            "hasta": None,
+            "usuarioId": rol.idUsuario,
+            "idCurso": None,
+        })
+
+    resultado.sort(key=lambda x: str(x["desde"] or ""), reverse=True)
+    return resultado
 
 # ==============================================================
 # CICLOS LECTIVOS / CURSOS
@@ -503,3 +535,53 @@ def get_cursos_por_escuela_y_ciclo(db: SessionDep, cue: str, ciclo_lectivo: str)
         }
         for c in cursos
     ]
+
+def dar_de_baja_docente(db: SessionDep, usuario_id: int, cue: str, director_id: int):
+    rol_dir = get_one_rol(director_id, cue, db)
+    if not rol_dir or rol_dir.estado != RolEstado.Activo or rol_dir.descripcion != RolDescripcion.Director:
+        raise HTTPException(status_code=403, detail="Solo un Director Activo puede dar de baja docentes")
+
+    rol_doc = get_one_rol(usuario_id, cue, db)
+    if not rol_doc or rol_doc.descripcion != RolDescripcion.Docente:
+        raise HTTPException(status_code=404, detail="Docente no encontrado en esta escuela")
+
+    # inactivar asignaciones de cursos
+    stmt = (
+        select(CursoDocente)
+        .join(Curso, Curso.idCurso == CursoDocente.idCurso)
+        .where(
+            CursoDocente.idUsuario == usuario_id,
+            CursoDocente.estado == "Activo",
+            Curso.CUE == cue,
+        )
+    )
+    asignaciones = db.exec(stmt).all()
+    for a in asignaciones:
+        a.estado = "Inactivo"
+        a.fechaHasta = date.today()
+        db.add(a)
+
+    # inactivar rol
+    rol_doc.estado = RolEstado.Inactivo
+    rol_doc.fechaBaja = date.today()      
+    rol_doc.motivoBaja = "Baja manual"     
+    db.add(rol_doc)
+    db.commit()
+    return {"ok": True, "asignaciones_inactivadas": len(asignaciones)}
+
+
+def reactivar_docente(db: SessionDep, usuario_id: int, cue: str, director_id: int):
+    rol_dir = get_one_rol(director_id, cue, db)
+    if not rol_dir or rol_dir.estado != RolEstado.Activo or rol_dir.descripcion != RolDescripcion.Director:
+        raise HTTPException(status_code=403, detail="Solo un Director Activo puede reactivar docentes")
+
+    rol_doc = get_one_rol(usuario_id, cue, db)
+    if not rol_doc or rol_doc.descripcion != RolDescripcion.Docente:
+        raise HTTPException(status_code=404, detail="Docente no encontrado en esta escuela")
+
+    rol_doc.estado = RolEstado.Activo
+    rol_doc.fechaBaja = None
+    rol_doc.motivoBaja = "Reactivacion"
+    db.add(rol_doc)
+    db.commit()
+    return {"ok": True}

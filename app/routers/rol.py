@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException
 
 from app.dependencies import SessionDep
 from app.schemas.rol import RolCreate, RolDescripcion, RolPublic, RolUpdate, RolEstado
+from app.services.usuario_service import dar_de_baja_docente, reactivar_docente
 from app.schemas.usuario import Usuario_Roles
 from app.services.rol_service import (
     change_rol_status,
@@ -131,3 +132,23 @@ def get_asistentes_estado_pendiente(session: SessionDep):
         asistente_roles.append(Usuario_Roles(**asistente_db, rol=rol_db))
 
     return asistente_roles
+
+
+
+@router.post("/docentes/{usuario_id}/baja")
+def endpoint_dar_de_baja(
+    usuario_id: int,
+    cue: str,
+    director_id: int,
+    session: SessionDep,
+):
+    return dar_de_baja_docente(session, usuario_id, cue, director_id)
+
+@router.post("/docentes/{usuario_id}/reactivar")
+def endpoint_reactivar(
+    usuario_id: int,
+    cue: str,
+    director_id: int,
+    session: SessionDep,
+):
+    return reactivar_docente(session, usuario_id, cue, director_id)
