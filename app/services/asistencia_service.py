@@ -67,6 +67,15 @@ def ensure_alumnos_exist(db: SessionDep, ids_alumnos: Iterable[int]):
         raise HTTPException(status_code=404, detail=f"Alumnos inexistentes: {faltantes}")
 
 
+def _ausencia_ya_justificada(existente: Optional[Asistencia], fecha: date) -> bool:
+    """Devuelve True si la ausencia ya tiene justificación vigente para la fecha dada."""
+    return (
+        existente is not None
+        and existente.justificado_hasta is not None
+        and existente.justificado_hasta >= fecha
+    )
+
+
 # ==========================
 # Helpers internos: disparar las 4 alertas automáticas
 # ==========================
@@ -201,7 +210,9 @@ async def upsert_asistencia(
         if estado_final in (AsistenciaEstado.Ausente, AsistenciaEstado.Tarde):
             _disparar_alertas_automaticas(db, existente.idCurso, existente.fecha, estado_final)
 
-        if estado_final == AsistenciaEstado.Ausente and not ya_notificado:
+        # No notificar si ya se envió WPP antes, o si la ausencia ya está justificada
+        ya_justificada = _ausencia_ya_justificada(existente, existente.fecha)
+        if estado_final == AsistenciaEstado.Ausente and not ya_notificado and not ya_justificada:
             datos = _cargar_datos_whatsapp(db, [alumno.idAlumno], {alumno.idAlumno: alumno})
             for d in datos:
                 d["idCurso"]  = existente.idCurso
@@ -220,7 +231,10 @@ async def upsert_asistencia(
     if estado_final in (AsistenciaEstado.Ausente, AsistenciaEstado.Tarde):
         _disparar_alertas_automaticas(db, nueva.idCurso, nueva.fecha, estado_final)
 
-    if estado_final == AsistenciaEstado.Ausente:
+    # Para registros nuevos justificado_hasta siempre es None, pero el chequeo
+    # queda por consistencia defensiva ante futuros cambios.
+    ya_justificada = _ausencia_ya_justificada(nueva, nueva.fecha)
+    if estado_final == AsistenciaEstado.Ausente and not ya_justificada:
         datos = _cargar_datos_whatsapp(db, [alumno.idAlumno], {alumno.idAlumno: alumno})
         for d in datos:
             d["idCurso"]  = nueva.idCurso
@@ -269,7 +283,23 @@ async def upsert_asistencias_bulk(
         )
         ausentes_ya_notificados = set(db.exec(stmt_wamids).all())
 
-    ausentes_ids = [i for i in ausentes_ids_total if i not in ausentes_ya_notificados]
+    # Excluir además los que ya tienen justificación vigente para alguna fecha del bulk
+    ausentes_ya_justificados: set[int] = set()
+    if ausentes_ids_total:
+        fechas_bulk = {p.fecha for p in payloads if p.estado == "Ausente"}
+        if fechas_bulk:
+            fecha_minima = min(fechas_bulk)
+            stmt_justificados = select(Asistencia.idAlumno).where(
+                Asistencia.idAlumno.in_(ausentes_ids_total),
+                Asistencia.justificado_hasta != None,
+                Asistencia.justificado_hasta >= fecha_minima,
+            )
+            ausentes_ya_justificados = set(db.exec(stmt_justificados).all())
+
+    ausentes_ids = [
+        i for i in ausentes_ids_total
+        if i not in ausentes_ya_notificados and i not in ausentes_ya_justificados
+    ]
     datos_envio = _cargar_datos_whatsapp(db, ausentes_ids, alumnos_map)
 
     fecha = payloads[0].fecha
