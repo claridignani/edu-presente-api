@@ -59,7 +59,7 @@ _UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=str(_UPLOADS_DIR)), name="uploads")
 
 origins = [
-    "https://edupresente.vercel.app"
+    "https://edupresente.vercel.app",
 ]
 
 app.add_middleware(
