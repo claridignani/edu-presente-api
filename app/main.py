@@ -40,6 +40,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv()
 import logging
+import os
+_is_prod = os.getenv("ENV") == "production"
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -47,19 +49,22 @@ logging.basicConfig(
 )
 
 
-app = FastAPI()
+app = FastAPI(
+    docs_url=None if _is_prod else "/docs",
+    redoc_url=None if _is_prod else "/redoc",
+)
 
 _UPLOADS_DIR = Path(__file__).resolve().parent.parent / "uploads"
+_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=str(_UPLOADS_DIR)), name="uploads")
 
 origins = [
-    "http://localhost:4200",
-    "http://127.0.0.1:4200",
+    "https://edupresente.vercel.app",
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
