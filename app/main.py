@@ -59,6 +59,9 @@ _UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=str(_UPLOADS_DIR)), name="uploads")
 
 origins = [
+    "http://localhost:4200",
+    "http://localhost:8100",
+    "http://127.0.0.1:4200",
     "https://edupresente.vercel.app",
 ]
 
