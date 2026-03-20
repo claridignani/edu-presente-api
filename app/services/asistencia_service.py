@@ -4,8 +4,8 @@ from __future__ import annotations
 import asyncio
 from datetime import date, timedelta
 from typing import Annotated, Optional, Iterable
-
-from fastapi import HTTPException, Query, BackgroundTasks
+from pathlib import Path
+from fastapi import HTTPException, Query, BackgroundTasks, UploadFile
 from sqlmodel import Session, select, desc
 from sqlalchemy import func, case, and_
 
@@ -65,6 +65,15 @@ def ensure_alumnos_exist(db: SessionDep, ids_alumnos: Iterable[int]):
     faltantes = [i for i in ids if i not in existentes]
     if faltantes:
         raise HTTPException(status_code=404, detail=f"Alumnos inexistentes: {faltantes}")
+
+
+def _ausencia_ya_justificada(existente: Optional[Asistencia], fecha: date) -> bool:
+    """Devuelve True si la ausencia ya tiene justificación vigente para la fecha dada."""
+    return (
+        existente is not None
+        and existente.justificado_hasta is not None
+        and existente.justificado_hasta >= fecha
+    )
 
 
 # ==========================
@@ -201,7 +210,9 @@ async def upsert_asistencia(
         if estado_final in (AsistenciaEstado.Ausente, AsistenciaEstado.Tarde):
             _disparar_alertas_automaticas(db, existente.idCurso, existente.fecha, estado_final)
 
-        if estado_final == AsistenciaEstado.Ausente and not ya_notificado:
+        # No notificar si ya se envió WPP antes, o si la ausencia ya está justificada
+        ya_justificada = _ausencia_ya_justificada(existente, existente.fecha)
+        if estado_final == AsistenciaEstado.Ausente and not ya_notificado and not ya_justificada:
             datos = _cargar_datos_whatsapp(db, [alumno.idAlumno], {alumno.idAlumno: alumno})
             for d in datos:
                 d["idCurso"]  = existente.idCurso
@@ -220,7 +231,10 @@ async def upsert_asistencia(
     if estado_final in (AsistenciaEstado.Ausente, AsistenciaEstado.Tarde):
         _disparar_alertas_automaticas(db, nueva.idCurso, nueva.fecha, estado_final)
 
-    if estado_final == AsistenciaEstado.Ausente:
+    # Para registros nuevos justificado_hasta siempre es None, pero el chequeo
+    # queda por consistencia defensiva ante futuros cambios.
+    ya_justificada = _ausencia_ya_justificada(nueva, nueva.fecha)
+    if estado_final == AsistenciaEstado.Ausente and not ya_justificada:
         datos = _cargar_datos_whatsapp(db, [alumno.idAlumno], {alumno.idAlumno: alumno})
         for d in datos:
             d["idCurso"]  = nueva.idCurso
@@ -269,7 +283,23 @@ async def upsert_asistencias_bulk(
         )
         ausentes_ya_notificados = set(db.exec(stmt_wamids).all())
 
-    ausentes_ids = [i for i in ausentes_ids_total if i not in ausentes_ya_notificados]
+    # Excluir además los que ya tienen justificación vigente para alguna fecha del bulk
+    ausentes_ya_justificados: set[int] = set()
+    if ausentes_ids_total:
+        fechas_bulk = {p.fecha for p in payloads if p.estado == "Ausente"}
+        if fechas_bulk:
+            fecha_minima = min(fechas_bulk)
+            stmt_justificados = select(Asistencia.idAlumno).where(
+                Asistencia.idAlumno.in_(ausentes_ids_total),
+                Asistencia.justificado_hasta != None,
+                Asistencia.justificado_hasta >= fecha_minima,
+            )
+            ausentes_ya_justificados = set(db.exec(stmt_justificados).all())
+
+    ausentes_ids = [
+        i for i in ausentes_ids_total
+        if i not in ausentes_ya_notificados and i not in ausentes_ya_justificados
+    ]
     datos_envio = _cargar_datos_whatsapp(db, ausentes_ids, alumnos_map)
 
     fecha = payloads[0].fecha
@@ -1371,4 +1401,82 @@ def revisar_certificado(
     db.commit()
     db.refresh(asistencia)
 
+    return asistencia
+
+_UPLOADS_DIR_SERVICE = Path(__file__).resolve().parent.parent.parent / "uploads" / "certificados"
+ 
+# Tipos MIME permitidos para certificados subidos desde el frontend
+_ALLOWED_MIME_TYPES = {
+    "image/jpeg": "jpg",
+    "image/jpg":  "jpg",
+    "image/png":  "png",
+    "image/webp": "webp",
+    "image/heic": "heic",
+    "image/heif": "heif",
+}
+ 
+# Tamaño máximo: 10 MB
+_MAX_FILE_SIZE = 10 * 1024 * 1024
+ 
+ 
+async def upload_certificado_docente(
+    db: SessionDep,
+    idCurso:  int,
+    idAlumno: int,
+    fecha:    date,
+    file:     UploadFile,
+) -> Asistencia:
+    """
+    Recibe una imagen subida desde el frontend (docente) y la guarda
+    como certificado médico pendiente de revisión.
+ 
+    - Valida tipo MIME y tamaño.
+    - Guarda el archivo en uploads/certificados/.
+    - Setea certificado_path y certificado_estado = 'pendiente'.
+    - Si ya existía un certificado previo, lo sobreescribe.
+    """
+    asistencia = db.get(Asistencia, (idCurso, idAlumno, fecha))
+    if not asistencia:
+        raise HTTPException(status_code=404, detail="Asistencia no encontrada")
+ 
+    if asistencia.estado != "Ausente":
+        raise HTTPException(
+            status_code=400,
+            detail="Solo se puede adjuntar certificado a inasistencias con estado 'Ausente'",
+        )
+ 
+    # ── Validar MIME ──
+    content_type = file.content_type or ""
+    extension    = _ALLOWED_MIME_TYPES.get(content_type)
+    if not extension:
+        raise HTTPException(
+            status_code=415,
+            detail=f"Tipo de archivo no permitido: {content_type}. Use JPG, PNG o WEBP.",
+        )
+ 
+    # ── Leer bytes y validar tamaño ──
+    contenido = await file.read()
+    if len(contenido) > _MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"El archivo supera el tamaño máximo permitido de 10 MB.",
+        )
+ 
+    # ── Guardar en disco ──
+    _UPLOADS_DIR_SERVICE.mkdir(parents=True, exist_ok=True)
+    filename = f"{idCurso}_{idAlumno}_{fecha}.{extension}"
+    filepath = _UPLOADS_DIR_SERVICE / filename
+    filepath.write_bytes(contenido)
+ 
+    # ── Actualizar DB ──
+    asistencia.certificado_path   = filename
+    asistencia.certificado_estado = "pendiente"
+    # Asegurarse de setear el motivo si no estaba
+    if not asistencia.motivo_ausencia:
+        asistencia.motivo_ausencia = "Enfermedad"
+ 
+    db.add(asistencia)
+    db.commit()
+    db.refresh(asistencia)
+ 
     return asistencia
