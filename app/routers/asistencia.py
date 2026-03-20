@@ -2,7 +2,8 @@
 from datetime import date
 from typing import Annotated, Optional
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Depends, Response
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Depends, Response, UploadFile, File
+from fastapi.responses import FileResponse
 
 from app.dependencies import SessionDep
 from app.schemas.asistencia import AsistenciaCreate, AsistenciaPublic, AsistenciaRead, CertificadoRevisionRequest, NotificacionDocente
@@ -29,16 +30,21 @@ from app.services.asistencia_service import (
     stats_motivos_ausencia,
     get_notificaciones_docente_por_usuario,
     get_notificaciones_docente_historial,
+    upload_certificado_docente,
 )
 from app.services.whatsapp_service import enviar_plantilla_inasistencia
 from app.schemas.asistencia_bulk_curso import AsistenciaCursoFechaBulkRequest, AsistenciaCursoRangoBulkRequest
 from app.dependencies.auth import get_current_user
 from app.models.usuario import Usuario
+from pathlib import Path
 
 router = APIRouter(prefix="/asistencias", tags=["Asistencias"])
 
 # TTL para cache de estadísticas (5 minutos)
 _STATS_CACHE_TTL = 300
+
+# Carpeta de certificados (la misma que usa whatsapp_service)
+_UPLOADS_DIR = Path(__file__).resolve().parent.parent.parent / "uploads" / "certificados"
 
 
 # ==========================
@@ -55,14 +61,13 @@ def _to_read(r) -> AsistenciaRead:
         wamid=r.wamid,
         motivo_ausencia=r.motivo_ausencia,
         certificado_path=r.certificado_path,
-        certificado_estado=r.certificado_estado,   
-        justificado_hasta=r.justificado_hasta,     
-        revisado_por=r.revisado_por,               
+        certificado_estado=r.certificado_estado,
+        justificado_hasta=r.justificado_hasta,
+        revisado_por=r.revisado_por,
     )
 
 
 def _set_cache_headers(response: Response) -> None:
-    """Aplica headers de cache privado de 5 minutos a la respuesta."""
     response.headers["Cache-Control"] = f"private, max-age={_STATS_CACHE_TTL}"
 
 
@@ -233,7 +238,6 @@ def read_stats_alumnos_por_rango(
     cursoIds: Optional[list[int]] = Query(default=None),
     curso_ids: Optional[list[int]] = Query(default=None),
 ):
-    # Sin cache — es interactivo
     cursos = cursoIds if cursoIds is not None else curso_ids
     return stats_alumnos_por_rango(
         db=session, cue=cue, desde=desde, hasta=hasta, rango=rango, curso_ids=cursos,
@@ -427,6 +431,57 @@ def read_notificaciones_docente(
     current_user: Usuario = Depends(get_current_user),
 ):
     return get_notificaciones_docente(db=session, idCurso=idCurso)
+
+
+# ==========================
+# Certificado — upload desde el docente (frontend)
+# ⚠️ Debe ir ANTES del PATCH genérico de certificado
+# ==========================
+
+@router.post(
+    "/{idCurso}/{idAlumno}/{fecha}/certificado/upload",
+    response_model=AsistenciaRead,
+    summary="Subir imagen de certificado médico desde el frontend (docente)",
+)
+async def upload_certificado(
+    idCurso:  int,
+    idAlumno: int,
+    fecha:    date,
+    session:  SessionDep,
+    file:     UploadFile = File(...),
+    current_user: Usuario = Depends(get_current_user),
+):
+    row = await upload_certificado_docente(
+        db=session,
+        idCurso=idCurso,
+        idAlumno=idAlumno,
+        fecha=fecha,
+        file=file,
+    )
+    return _to_read(row)
+
+
+# ==========================
+# Certificado — servir imagen
+# ==========================
+
+@router.get(
+    "/certificado/imagen/{filename}",
+    summary="Descargar imagen de certificado médico",
+)
+def get_certificado_imagen(
+    filename: str,
+    current_user: Usuario = Depends(get_current_user),
+):
+    # Sanitizar: no permitir path traversal
+    if "/" in filename or "\\" in filename or ".." in filename:
+        raise HTTPException(status_code=400, detail="Nombre de archivo inválido")
+
+    filepath = _UPLOADS_DIR / filename
+    if not filepath.exists():
+        raise HTTPException(status_code=404, detail="Certificado no encontrado")
+
+    return FileResponse(str(filepath))
 
 
 # ==========================

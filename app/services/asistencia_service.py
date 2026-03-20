@@ -4,8 +4,8 @@ from __future__ import annotations
 import asyncio
 from datetime import date, timedelta
 from typing import Annotated, Optional, Iterable
-
-from fastapi import HTTPException, Query, BackgroundTasks
+from pathlib import Path
+from fastapi import HTTPException, Query, BackgroundTasks, UploadFile
 from sqlmodel import Session, select, desc
 from sqlalchemy import func, case, and_
 
@@ -1401,4 +1401,82 @@ def revisar_certificado(
     db.commit()
     db.refresh(asistencia)
 
+    return asistencia
+
+_UPLOADS_DIR_SERVICE = Path(__file__).resolve().parent.parent.parent / "uploads" / "certificados"
+ 
+# Tipos MIME permitidos para certificados subidos desde el frontend
+_ALLOWED_MIME_TYPES = {
+    "image/jpeg": "jpg",
+    "image/jpg":  "jpg",
+    "image/png":  "png",
+    "image/webp": "webp",
+    "image/heic": "heic",
+    "image/heif": "heif",
+}
+ 
+# Tamaño máximo: 10 MB
+_MAX_FILE_SIZE = 10 * 1024 * 1024
+ 
+ 
+async def upload_certificado_docente(
+    db: SessionDep,
+    idCurso:  int,
+    idAlumno: int,
+    fecha:    date,
+    file:     UploadFile,
+) -> Asistencia:
+    """
+    Recibe una imagen subida desde el frontend (docente) y la guarda
+    como certificado médico pendiente de revisión.
+ 
+    - Valida tipo MIME y tamaño.
+    - Guarda el archivo en uploads/certificados/.
+    - Setea certificado_path y certificado_estado = 'pendiente'.
+    - Si ya existía un certificado previo, lo sobreescribe.
+    """
+    asistencia = db.get(Asistencia, (idCurso, idAlumno, fecha))
+    if not asistencia:
+        raise HTTPException(status_code=404, detail="Asistencia no encontrada")
+ 
+    if asistencia.estado != "Ausente":
+        raise HTTPException(
+            status_code=400,
+            detail="Solo se puede adjuntar certificado a inasistencias con estado 'Ausente'",
+        )
+ 
+    # ── Validar MIME ──
+    content_type = file.content_type or ""
+    extension    = _ALLOWED_MIME_TYPES.get(content_type)
+    if not extension:
+        raise HTTPException(
+            status_code=415,
+            detail=f"Tipo de archivo no permitido: {content_type}. Use JPG, PNG o WEBP.",
+        )
+ 
+    # ── Leer bytes y validar tamaño ──
+    contenido = await file.read()
+    if len(contenido) > _MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"El archivo supera el tamaño máximo permitido de 10 MB.",
+        )
+ 
+    # ── Guardar en disco ──
+    _UPLOADS_DIR_SERVICE.mkdir(parents=True, exist_ok=True)
+    filename = f"{idCurso}_{idAlumno}_{fecha}.{extension}"
+    filepath = _UPLOADS_DIR_SERVICE / filename
+    filepath.write_bytes(contenido)
+ 
+    # ── Actualizar DB ──
+    asistencia.certificado_path   = filename
+    asistencia.certificado_estado = "pendiente"
+    # Asegurarse de setear el motivo si no estaba
+    if not asistencia.motivo_ausencia:
+        asistencia.motivo_ausencia = "Enfermedad"
+ 
+    db.add(asistencia)
+    db.commit()
+    db.refresh(asistencia)
+ 
     return asistencia
