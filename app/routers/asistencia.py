@@ -23,6 +23,7 @@ from app.services.asistencia_service import (
     alertas_inasistencias_consecutivas,
     stats_dias_semana,
     stats_alumnos_por_rango,
+    stats_justificadas_vs_injustificadas,
     upsert_asistencias_por_curso_fecha,
     upsert_asistencias_por_curso_rango,
     get_notificaciones_docente,
@@ -43,7 +44,7 @@ router = APIRouter(prefix="/asistencias", tags=["Asistencias"])
 # TTL para cache de estadísticas (5 minutos)
 _STATS_CACHE_TTL = 300
 
-# Carpeta de certificados (la misma que usa whatsapp_service)
+# Carpeta de certificados
 _UPLOADS_DIR = Path(__file__).resolve().parent.parent.parent / "uploads" / "certificados"
 
 
@@ -97,6 +98,7 @@ async def create_or_update_asistencias_bulk(
 
 # ==========================
 # Estadísticas (Director)
+# ⚠️ TODOS los /stats/... deben ir ANTES de las rutas con path params
 # ==========================
 
 @router.get("/stats/resumen")
@@ -228,6 +230,23 @@ def read_stats_dias_semana(
     )
 
 
+@router.get("/stats/justificadas")
+def read_stats_justificadas(
+    response: Response,
+    session: SessionDep,
+    cue: str,
+    desde: date,
+    hasta: date,
+    cursoIds: Optional[list[int]] = Query(default=None),
+    curso_ids: Optional[list[int]] = Query(default=None),
+):
+    _set_cache_headers(response)
+    cursos = cursoIds if cursoIds is not None else curso_ids
+    return stats_justificadas_vs_injustificadas(
+        db=session, cue=cue, desde=desde, hasta=hasta, curso_ids=cursos,
+    )
+
+
 @router.get("/stats/alumnos-por-rango")
 def read_stats_alumnos_por_rango(
     session: SessionDep,
@@ -238,6 +257,7 @@ def read_stats_alumnos_por_rango(
     cursoIds: Optional[list[int]] = Query(default=None),
     curso_ids: Optional[list[int]] = Query(default=None),
 ):
+    # Sin cache — es interactivo
     cursos = cursoIds if cursoIds is not None else curso_ids
     return stats_alumnos_por_rango(
         db=session, cue=cue, desde=desde, hasta=hasta, rango=rango, curso_ids=cursos,
@@ -299,7 +319,30 @@ def read_notificaciones_docente_historial(
 
 
 # ==========================
-# Reads
+# Certificado — servir imagen
+# ⚠️ Debe ir ANTES de /{idCurso}/... para evitar conflictos
+# ==========================
+
+@router.get(
+    "/certificado/imagen/{filename}",
+    summary="Descargar imagen de certificado médico",
+)
+def get_certificado_imagen(
+    filename: str,
+    current_user: Usuario = Depends(get_current_user),
+):
+    if "/" in filename or "\\" in filename or ".." in filename:
+        raise HTTPException(status_code=400, detail="Nombre de archivo inválido")
+
+    filepath = _UPLOADS_DIR / filename
+    if not filepath.exists():
+        raise HTTPException(status_code=404, detail="Certificado no encontrado")
+
+    return FileResponse(str(filepath))
+
+
+# ==========================
+# Reads (con path params)
 # ==========================
 
 @router.get("/one/{idCurso}/{idAlumno}/{fecha}", response_model=AsistenciaRead)
@@ -352,16 +395,6 @@ def read_asistencias_by_curso(
     hasta: Optional[date] = Query(default=None),
 ):
     rows = get_asistencias_by_curso(db=session, idCurso=idCurso, offset=offset, limit=limit)
-    return [_to_read(r) for r in rows]
-
-
-@router.get("/{idCurso}/{fecha}", response_model=list[AsistenciaRead])
-def read_asistencias_by_curso_fecha(
-    idCurso: int,
-    fecha: date,
-    session: SessionDep,
-):
-    rows = get_asistencias_by_curso_fecha(db=session, idCurso=idCurso, fecha=fecha)
     return [_to_read(r) for r in rows]
 
 
@@ -434,7 +467,7 @@ def read_notificaciones_docente(
 
 
 # ==========================
-# Certificado — upload desde el docente (frontend)
+# Certificado — upload desde el docente
 # ⚠️ Debe ir ANTES del PATCH genérico de certificado
 # ==========================
 
@@ -452,36 +485,9 @@ async def upload_certificado(
     current_user: Usuario = Depends(get_current_user),
 ):
     row = await upload_certificado_docente(
-        db=session,
-        idCurso=idCurso,
-        idAlumno=idAlumno,
-        fecha=fecha,
-        file=file,
+        db=session, idCurso=idCurso, idAlumno=idAlumno, fecha=fecha, file=file,
     )
     return _to_read(row)
-
-
-# ==========================
-# Certificado — servir imagen
-# ==========================
-
-@router.get(
-    "/certificado/imagen/{filename}",
-    summary="Descargar imagen de certificado médico",
-)
-def get_certificado_imagen(
-    filename: str,
-    current_user: Usuario = Depends(get_current_user),
-):
-    # Sanitizar: no permitir path traversal
-    if "/" in filename or "\\" in filename or ".." in filename:
-        raise HTTPException(status_code=400, detail="Nombre de archivo inválido")
-
-    filepath = _UPLOADS_DIR / filename
-    if not filepath.exists():
-        raise HTTPException(status_code=404, detail="Certificado no encontrado")
-
-    return FileResponse(str(filepath))
 
 
 # ==========================
@@ -506,3 +512,17 @@ def patch_certificado(
         fecha=fecha, payload=payload, revisado_por_id=current_user.idUsuario,
     )
     return _to_read(row)
+
+
+# ==========================
+# ⚠️ Rutas genéricas AL FINAL — deben ir después de todas las específicas
+# ==========================
+
+@router.get("/{idCurso}/{fecha}", response_model=list[AsistenciaRead])
+def read_asistencias_by_curso_fecha(
+    idCurso: int,
+    fecha: date,
+    session: SessionDep,
+):
+    rows = get_asistencias_by_curso_fecha(db=session, idCurso=idCurso, fecha=fecha)
+    return [_to_read(r) for r in rows]

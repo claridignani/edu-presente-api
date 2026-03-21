@@ -7,8 +7,7 @@ from typing import Annotated, Optional, Iterable
 from pathlib import Path
 from fastapi import HTTPException, Query, BackgroundTasks, UploadFile
 from sqlmodel import Session, select, desc
-from sqlalchemy import func, case, and_
-
+from sqlalchemy import func, case, and_, or_
 from app.dependencies import SessionDep
 from app.db.database import engine
 from app.models.asistencia import Asistencia
@@ -785,6 +784,53 @@ def stats_serie(
         })
     return out
 
+def stats_justificadas_vs_injustificadas(
+    db: SessionDep,
+    cue: str,
+    desde: date,
+    hasta: date,
+    curso_ids: Optional[list[int]] = None,
+) -> dict:
+    where = _base_where(cue, desde, hasta, curso_ids)
+
+    # Justificadas: Ausente con certificado aprobado O con justificado_hasta seteado
+    stmt_just = (
+        select(func.count())
+        .select_from(Asistencia, Curso)
+        .where(and_(
+            *where,
+            Asistencia.estado == "Ausente",
+            or_(
+                Asistencia.certificado_estado == "aprobado",
+                Asistencia.justificado_hasta != None,
+            )
+        ))
+    )
+
+    # Injustificadas por Enfermedad: Ausente + motivo Enfermedad + sin justificación
+    stmt_inj = (
+        select(func.count())
+        .select_from(Asistencia, Curso)
+        .where(and_(
+            *where,
+            Asistencia.estado == "Ausente",
+            Asistencia.motivo_ausencia == "Enfermedad",
+            Asistencia.certificado_estado != "aprobado",
+            Asistencia.justificado_hasta == None,
+        ))
+    )
+
+    justificadas   = int(db.exec(stmt_just).one() or 0)
+    injustificadas = int(db.exec(stmt_inj).one() or 0)
+    total = justificadas + injustificadas
+
+    return {
+        "justificadas":      justificadas,
+        "injustificadas":    injustificadas,
+        "total":             total,
+        "justificadasPct":   round((justificadas   / total) * 100, 1) if total else 0.0,
+        "injustificadasPct": round((injustificadas / total) * 100, 1) if total else 0.0,
+    }
 
 def stats_distribucion_inasistencias(
     db: SessionDep,
