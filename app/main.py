@@ -65,6 +65,8 @@ origins = [
     "http://192.168.100.14:4200", 
     "https://edupresente.vercel.app",
     "http://192.168.100.37:4200",
+    "https://edupresente.com.ar",      
+    "https://www.edupresente.com.ar", 
 ]
 
 app.add_middleware(
