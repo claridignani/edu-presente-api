@@ -410,7 +410,21 @@ def get_alumnos_by_curso(idCurso: int, db: SessionDep):
         .join(Inscriptos, Inscriptos.idAlumno == Alumno.idAlumno)
         .where(Inscriptos.idCurso == idCurso, Inscriptos.activo == True)
     )
-    return db.exec(stmt).all()
+    alumnos = db.exec(stmt).all()
+    
+    return [
+        {
+            "idAlumno": a.idAlumno,
+            "nombre": a.nombre,
+            "apellido": a.apellido,
+            "dni": decrypt(a.dni) if a.dni else None,
+            "fecha_nacimiento": decrypt(a.fecha_nacimiento) if a.fecha_nacimiento else None,
+            "fecha_ingreso": a.fecha_ingreso,
+            "direccion": decrypt(a.direccion) if a.direccion else None,
+            "estado": a.estado,
+        }
+        for a in alumnos
+    ]
 
 
 # ==============================================================

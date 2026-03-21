@@ -64,6 +64,7 @@ origins = [
     "http://127.0.0.1:4200",
     "http://192.168.100.14:4200", 
     "https://edupresente.vercel.app",
+    "http://192.168.100.37:4200",
 ]
 
 app.add_middleware(

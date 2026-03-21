@@ -1,3 +1,9 @@
+from fastapi.exceptions import RequestValidationError
+from fastapi import Request
+from fastapi.responses import JSONResponse
+
+# En alumno_router.py, antes del endpoint, agregá un exception handler
+# O más simple: mirá los logs de uvicorn con --log-level debug
 from typing import Annotated, Optional
 from fastapi import APIRouter, HTTPException, Query, Depends
 from datetime import date
@@ -143,7 +149,7 @@ def alumnos_historial_por_ciclo(
     q: str | None = Query(default=None),
     soloActivos: bool = Query(default=False),
     offset: int = 0,
-    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    limit: Annotated[int, Query(ge=1, le=1000)] = 20,
 ):
     return get_alumnos_historial_por_ciclo(
         db=session,
