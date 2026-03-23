@@ -34,9 +34,6 @@ from app.routers.pases import router as pases_router
 from app.routers.ciclo_lectivo import router as ciclo_lectivo_router
 from app.routers.reset_password import router as reset_password_router
 
-from fastapi.staticfiles import StaticFiles
-from pathlib import Path
-
 from dotenv import load_dotenv
 load_dotenv()
 import logging
@@ -53,10 +50,6 @@ app = FastAPI(
     docs_url=None if _is_prod else "/docs",
     redoc_url=None if _is_prod else "/redoc",
 )
-
-_UPLOADS_DIR = Path(__file__).resolve().parent.parent / "uploads"
-_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
-app.mount("/uploads", StaticFiles(directory=str(_UPLOADS_DIR)), name="uploads")
 
 origins = [
     "http://localhost:4200",
