@@ -4,6 +4,7 @@ from typing import Annotated, Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Depends, Response, UploadFile, File
 from fastapi.responses import FileResponse
+from pathlib import Path
 
 from app.dependencies import SessionDep
 from app.schemas.asistencia import AsistenciaCreate, AsistenciaPublic, AsistenciaRead, CertificadoRevisionRequest, NotificacionDocente
@@ -37,7 +38,7 @@ from app.services.whatsapp_service import enviar_plantilla_inasistencia
 from app.schemas.asistencia_bulk_curso import AsistenciaCursoFechaBulkRequest, AsistenciaCursoRangoBulkRequest
 from app.dependencies.auth import get_current_user
 from app.models.usuario import Usuario
-from pathlib import Path
+
 
 router = APIRouter(prefix="/asistencias", tags=["Asistencias"])
 
@@ -512,6 +513,41 @@ def patch_certificado(
         fecha=fecha, payload=payload, revisado_por_id=current_user.idUsuario,
     )
     return _to_read(row)
+
+
+# ==========================
+# Servir certificados (protegido con JWT)
+# ==========================
+
+_CERTIFICADOS_DIR = Path(__file__).resolve().parent.parent.parent / "uploads" / "certificados"
+
+# Extensiones válidas para certificados médicos
+_VALID_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+
+
+@router.get(
+    "/certificados/{filename}",
+    summary="Obtener imagen de certificado médico (requiere JWT)",
+)
+def get_certificado_image(
+    filename: str,
+    current_user: Usuario = Depends(get_current_user),
+):
+    # Prevenir path traversal
+    safe_name = Path(filename).name
+    if safe_name != filename or ".." in filename:
+        raise HTTPException(status_code=400, detail="Nombre de archivo inválido")
+
+    filepath = _CERTIFICADOS_DIR / safe_name
+
+    if not filepath.exists() or not filepath.is_file():
+        raise HTTPException(status_code=404, detail="Certificado no encontrado")
+
+    # Validar extensión
+    if filepath.suffix.lower() not in _VALID_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Tipo de archivo no permitido")
+
+    return FileResponse(filepath)
 
 
 # ==========================
