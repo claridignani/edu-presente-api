@@ -1,7 +1,8 @@
 # app/services/alerta_service.py
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date
+from app.core.datetime_utils import now_arg
 from typing import Optional
 
 from fastapi import HTTPException
@@ -415,7 +416,7 @@ def check_y_crear_alertas_consecutivas_para_curso_fecha(
     ).all()
     conteo_map = {int(r.idAlumno): int(r.cnt) for r in rows_cnt}
 
-    now = datetime.utcnow()
+    now = now_arg()
     for idAlumno in candidatos:
         if idAlumno not in insc_set:
             continue
@@ -545,7 +546,7 @@ def check_y_crear_alertas_reiteradas_para_curso_fecha(
         aid = int(row.idAlumno)
         fechas_por_alumno.setdefault(aid, []).append(row.fecha)
 
-    now = datetime.utcnow()
+    now = now_arg()
     for idAlumno in candidatos:
         if idAlumno not in insc_set:
             continue
@@ -642,7 +643,7 @@ def check_y_crear_alertas_tardanzas_consecutivas_para_curso_fecha(
     ).all()
     conteo_map = {int(r.idAlumno): int(r.cnt) for r in rows_cnt}
 
-    now = datetime.utcnow()
+    now = now_arg()
     for idAlumno in candidatos:
         if idAlumno not in insc_set:
             continue
@@ -763,7 +764,7 @@ def check_y_crear_alertas_tardanzas_para_curso_fecha(
         aid = int(row.idAlumno)
         fechas_por_alumno.setdefault(aid, []).append(row.fecha)
 
-    now = datetime.utcnow()
+    now = now_arg()
     for idAlumno in candidatos:
         if idAlumno not in insc_set:
             continue
@@ -922,7 +923,7 @@ def patch_alerta(
     prev_archivada = bool(alerta.archivada)
 
     if "estado" in data and data["estado"] == EstadoAlerta.RESUELTO and alerta.estado != EstadoAlerta.RESUELTO:
-        alerta.resueltaAt = datetime.utcnow()
+        alerta.resueltaAt = now_arg()
 
     for k, v in data.items():
         setattr(alerta, k, v)
@@ -966,7 +967,7 @@ def patch_alerta(
         db.add(ev)
 
     if hubo_cambio:
-        alerta.ultimaAccionAt = datetime.utcnow()
+        alerta.ultimaAccionAt = now_arg()
         db.add(alerta)
         db.commit()
         db.refresh(alerta)
@@ -1000,7 +1001,7 @@ def add_intervencion(
     )
     db.add(inter)
 
-    alerta.ultimaAccionAt = datetime.utcnow()
+    alerta.ultimaAccionAt = now_arg()
     if alerta.estado == EstadoAlerta.PENDIENTE:
         alerta.estado = EstadoAlerta.EN_PROCESO
 
@@ -1067,7 +1068,7 @@ def create_alerta(
     if hasattr(alerta, "created_by"):
         setattr(alerta, "created_by", actor_id)
 
-    now = datetime.utcnow()
+    now = now_arg()
     alerta.created_at = now
     alerta.ultimaAccionAt = now
 
@@ -1309,7 +1310,7 @@ def resync_alertas_automaticas(
         stmt = stmt.where(Alerta.idAlerta == idAlerta)
 
     alertas: list[Alerta] = list(db.exec(stmt).all())
-    now = datetime.utcnow()
+    now = now_arg()
     actualizadas = 0
 
     for alerta in alertas:
