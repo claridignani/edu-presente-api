@@ -12,58 +12,50 @@ router = APIRouter(prefix="/login", tags=["Login"])
 logger = logging.getLogger(__name__)
 
 
+# ── Login común ───────────────────────────────────────────────────────────────
+# Solo entra si tiene al menos un rol activo
 @router.post("/", response_model=LoginResponse)
 def login(data: LoginRequest, session: SessionDep):
-    # 1) Buscar usuario por DNI
     user = get_usuario_by_dni(db=session, dni=data.dni)
-
-    # 2) Validaciones separadas para mensajes distintos en el frontend
     if not user:
-        logger.warning(f"Login fallido — DNI no encontrado: {data.dni}")
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
-
-    if not verify_password(plain_password=data.password, hashed_password=user.contrasena):
-        logger.warning(f"Login fallido — contraseña incorrecta para DNI: {data.dni}")
+    if not verify_password(data.password, user.contrasena):
         raise HTTPException(status_code=401, detail="Contraseña incorrecta")
 
-    # 3) Traer roles + escuela
     try:
         statement = (
             select(Rol, Escuela)
             .join(Escuela, Rol.CUE == Escuela.CUE)
             .where(Rol.idUsuario == user.idUsuario)
-            .where(
-                or_(
-                    Rol.estado == "Activo",
-                    Rol.descripcion == "Administrador",
-                )
-            )
+            .where(or_(Rol.estado == "Activo", Rol.descripcion == "Administrador"))
         )
         resultados = session.exec(statement).all()
-
     except Exception as e:
         logger.error(f"Error buscando roles: {e}")
         raise HTTPException(status_code=500, detail="Error interno al buscar roles.")
 
-    opciones_validas: list[OpcionRol] = []
-    for rol, escuela in resultados:
-        opciones_validas.append(
-            OpcionRol(
-                idUsuario=rol.idUsuario,
-                descripcion=rol.descripcion,
-                CUE=escuela.CUE,
-                nombre_escuela=escuela.nombre,
-            )
+    opciones_validas: list[OpcionRol] = [
+        OpcionRol(
+            idUsuario=rol.idUsuario,
+            descripcion=rol.descripcion,
+            CUE=escuela.CUE,
+            nombre_escuela=escuela.nombre,
         )
+        for rol, escuela in resultados
+    ]
 
     if not opciones_validas:
-        logger.warning(f"Usuario {user.idUsuario} sin roles activos válidos.")
-        raise HTTPException(status_code=403, detail="Usuario pendiente de aprobación o sin roles asignados.")
+        # Verificar si tiene roles pendientes o ninguno
+        todos = session.exec(
+            select(Rol).where(Rol.idUsuario == user.idUsuario)
+        ).all()
+        if todos:
+            raise HTTPException(status_code=403, detail="Tu solicitud está pendiente de aprobación.")
+        else:
+            raise HTTPException(status_code=403, detail="No tenés roles asignados. Usá 'Solicitar acceso'.")
 
-    # 4) Emitir JWT
     token = create_access_token({"sub": str(user.idUsuario)})
-
-    logger.info(f"Login exitoso: {user.dni}")
+    logger.info(f"Login exitoso: usuario {user.idUsuario}")
 
     return LoginResponse(
         mensaje="Login exitoso",
@@ -71,6 +63,30 @@ def login(data: LoginRequest, session: SessionDep):
         nombre=user.nombre or "",
         apellido=user.apellido or "",
         roles_disponibles=opciones_validas,
+        access_token=token,
+        token_type="bearer",
+    )
+
+
+# ── Login para solicitar acceso ───────────────────────────────────────────────
+# Solo valida que el usuario exista y la contraseña sea correcta
+@router.post("/solicitud", response_model=LoginResponse)
+def login_solicitud(data: LoginRequest, session: SessionDep):
+    user = get_usuario_by_dni(db=session, dni=data.dni)
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    if not verify_password(data.password, user.contrasena):
+        raise HTTPException(status_code=401, detail="Contraseña incorrecta")
+
+    token = create_access_token({"sub": str(user.idUsuario)})
+    logger.info(f"Login solicitud exitoso: usuario {user.idUsuario}")
+
+    return LoginResponse(
+        mensaje="Login exitoso",
+        usuario_id=user.idUsuario,
+        nombre=user.nombre or "",
+        apellido=user.apellido or "",
+        roles_disponibles=[],  # no importan los roles acá
         access_token=token,
         token_type="bearer",
     )

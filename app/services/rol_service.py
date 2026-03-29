@@ -23,18 +23,39 @@ def create_rol(payload: RolCreate, db: SessionDep) -> Rol:
     if not escuela:
         raise HTTPException(status_code=404, detail="Escuela (CUE) no existe")
 
-    # evitar duplicado PK compuesta
+    # verificar si ya existe el rol
     existente = get_one_rol(idUsuario=payload.idUsuario, CUE=payload.CUE, db=db)
-    if existente:
-        raise HTTPException(status_code=409, detail="Ya existe un rol para ese usuario en esa escuela")
 
+    if existente:
+        if existente.estado == RolEstado.Activo:
+            raise HTTPException(
+                status_code=409,
+                detail="Ya tenés un rol activo en esta escuela"
+            )
+
+        if existente.estado == RolEstado.Pendiente:
+            raise HTTPException(
+                status_code=409,
+                detail="Ya existe una solicitud pendiente para esta escuela"
+            )
+
+        # Inactivo o Rechazado → puede volver a solicitar
+        existente.estado      = RolEstado.Pendiente
+        existente.descripcion = payload.descripcion
+        existente.fechaBaja   = None
+        existente.motivoBaja  = None
+        db.add(existente)
+        db.commit()
+        db.refresh(existente)
+        return existente
+
+    # Crear nuevo rol
     nuevo = Rol(
         idUsuario=payload.idUsuario,
         CUE=payload.CUE,
         descripcion=payload.descripcion,
         estado=payload.estado,
     )
-
     db.add(nuevo)
     db.commit()
     db.refresh(nuevo)
