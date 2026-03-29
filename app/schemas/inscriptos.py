@@ -8,6 +8,7 @@ from sqlmodel import SQLModel, Field
 
 class EstadoInscripcion(str, Enum):
     Activo = "Activo"
+    Inactivo = "Inactivo"
     CambioCurso = "CambioCurso"
     Promocionado = "Promocionado"
     Repitente = "Repitente"
