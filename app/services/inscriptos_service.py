@@ -117,6 +117,60 @@ def promocionar_alumnos(
     if director_id is None or int(director_id) <= 0:
         raise HTTPException(status_code=422, detail="Falta director_id válido")
 
+    ids_alumnos = [item.idAlumno for item in alumnos]
+
+    # ── Pre-carga en queries bulk ────────────────────────────────────────
+
+    # 1. Verificar que todos los alumnos existen
+    alumnos_existentes = db.exec(
+        select(Alumno).where(Alumno.idAlumno.in_(ids_alumnos))
+    ).all()
+    ids_encontrados = {a.idAlumno for a in alumnos_existentes}
+    faltantes = set(ids_alumnos) - ids_encontrados
+    if faltantes:
+        raise HTTPException(status_code=404, detail=f"Alumnos no encontrados: {faltantes}")
+
+    # 2. Inscripciones activas en curso origen
+    inscripciones_origen: dict[int, Inscriptos] = {
+        i.idAlumno: i
+        for i in db.exec(
+            select(Inscriptos).where(
+                Inscriptos.idCurso == idCursoOrigen,
+                Inscriptos.idAlumno.in_(ids_alumnos),
+                Inscriptos.activo == True,
+            )
+        ).all()
+    }
+
+    # 3. Inscripciones existentes en curso destino (para Promociona)
+    inscripciones_destino: dict[int, Inscriptos] = {}
+    if idCursoDestino:
+        inscripciones_destino = {
+            i.idAlumno: i
+            for i in db.exec(
+                select(Inscriptos).where(
+                    Inscriptos.idCurso == int(idCursoDestino),
+                    Inscriptos.idAlumno.in_(ids_alumnos),
+                )
+            ).all()
+        }
+
+    # 4. Preinscripciones existentes (para Repite)
+    ids_repiten = [item.idAlumno for item in alumnos if item.accion == AccionPromocion.Repite]
+    preinscripciones: dict[int, Preinscripcion] = {}
+    if ids_repiten and destino:
+        preinscripciones = {
+            p.idAlumno: p
+            for p in db.exec(
+                select(Preinscripcion).where(
+                    Preinscripcion.idAlumno.in_(ids_repiten),
+                    Preinscripcion.CUE == cue,
+                    Preinscripcion.cicloLectivo == str(destino.cicloLectivo),
+                )
+            ).all()
+        }
+
+    # ── Transacción ─────────────────────────────────────────────────────
     try:
         mov = MovimientoPromocion(
             cue=cue,
@@ -127,52 +181,30 @@ def promocionar_alumnos(
             estado="Activo",
         )
         db.add(mov)
-        db.flush()
+        db.flush()  # necesario para obtener mov.idMovimiento
 
         for item in alumnos:
-            _get_alumno_or_404(db, item.idAlumno)
-
-            # ✅ traemos el objeto directamente, sin doble búsqueda
-            insc_origen = db.exec(
-                select(Inscriptos).where(
-                    Inscriptos.idCurso == idCursoOrigen,
-                    Inscriptos.idAlumno == item.idAlumno,
-                    Inscriptos.activo == True,
-                )
-            ).first()
-
+            insc_origen = inscripciones_origen.get(item.idAlumno)
             id_insc_origen = int(insc_origen.idInscripcion) if insc_origen else None
 
             if insc_origen:
-                if item.accion == AccionPromocion.Promociona:
-                    _cerrar_inscripcion(insc_origen, EstadoInscripcion.Promocionado, hoy)
-                elif item.accion == AccionPromocion.Repite:
-                    _cerrar_inscripcion(insc_origen, EstadoInscripcion.Repitente, hoy)
-                elif item.accion == AccionPromocion.Egresa:
-                    _cerrar_inscripcion(insc_origen, EstadoInscripcion.Egreso, hoy)
-                elif item.accion == AccionPromocion.Baja:
-                    _cerrar_inscripcion(insc_origen, EstadoInscripcion.Baja, hoy)
+                estado_map = {
+                    AccionPromocion.Promociona: EstadoInscripcion.Promocionado,
+                    AccionPromocion.Repite:     EstadoInscripcion.Repitente,
+                    AccionPromocion.Egresa:     EstadoInscripcion.Egreso,
+                    AccionPromocion.Baja:       EstadoInscripcion.Baja,
+                }
+                _cerrar_inscripcion(insc_origen, estado_map[item.accion], hoy)
                 db.add(insc_origen)
-
-            db.flush()
 
             id_insc_destino = None
 
             if item.accion == AccionPromocion.Promociona:
-                estado_dest = EstadoInscripcion.Activo
-                existente = db.exec(
-                    select(Inscriptos)
-                    .where(
-                        Inscriptos.idCurso == int(idCursoDestino),
-                        Inscriptos.idAlumno == item.idAlumno,
-                    )
-                    .with_for_update()
-                ).first()
-
+                existente = inscripciones_destino.get(item.idAlumno)
                 if existente:
                     existente.activo = True
                     existente.fechaBaja = None
-                    existente.estado = estado_dest
+                    existente.estado = EstadoInscripcion.Activo
                     db.add(existente)
                     db.flush()
                     id_insc_destino = int(existente.idInscripcion)
@@ -182,49 +214,34 @@ def promocionar_alumnos(
                         idAlumno=item.idAlumno,
                         fechaAlta=hoy,
                         activo=True,
-                        estado=estado_dest,
+                        estado=EstadoInscripcion.Activo,
                     )
                     db.add(nueva)
-                    db.flush()
+                    db.flush()  # necesario para obtener nueva.idInscripcion
                     id_insc_destino = int(nueva.idInscripcion)
 
             elif item.accion == AccionPromocion.Repite:
-                stmt_pre = (
-                    select(Preinscripcion)
-                    .where(
-                        Preinscripcion.idAlumno == item.idAlumno,
-                        Preinscripcion.CUE == cue,
-                        Preinscripcion.cicloLectivo == str(destino.cicloLectivo),
-                    )
-                    .order_by(Preinscripcion.fechaCreacion.desc())
-                    .limit(1)
-                )
-                pre = db.exec(stmt_pre).first()
-
+                pre = preinscripciones.get(item.idAlumno)
                 if pre:
                     pre.estado = "Pendiente"
                     db.add(pre)
                 else:
-                    db.add(
-                        Preinscripcion(
-                            idAlumno=item.idAlumno,
-                            CUE=cue,
-                            cicloLectivo=str(destino.cicloLectivo),
-                            estado="Pendiente",
-                        )
-                    )
-                id_insc_destino = None
+                    db.add(Preinscripcion(
+                        idAlumno=item.idAlumno,
+                        CUE=cue,
+                        cicloLectivo=str(destino.cicloLectivo),
+                        estado="Pendiente",
+                    ))
 
-            it = MovimientoPromocionItem(
+            db.add(MovimientoPromocionItem(
                 idMovimiento=int(mov.idMovimiento),
                 idAlumno=int(item.idAlumno),
                 accion=item.accion.value,
                 idCursoOrigen=int(idCursoOrigen),
                 idCursoDestino=(int(idCursoDestino) if necesita_destino else None),
-                idInscripcionOrigen=id_insc_origen,  # ✅ ahora es int o None
+                idInscripcionOrigen=id_insc_origen,
                 idInscripcionDestino=id_insc_destino,
-            )
-            db.add(it)
+            ))
 
         db.commit()
         return PromocionarOut(ok=True, idMovimiento=int(mov.idMovimiento))
