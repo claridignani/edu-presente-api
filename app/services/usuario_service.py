@@ -536,14 +536,16 @@ def get_cursos_por_escuela_y_ciclo(db: SessionDep, cue: str, ciclo_lectivo: str)
         for c in cursos
     ]
 
+ROLES_PERSONAL = {RolDescripcion.Docente, RolDescripcion.Asistente}
+
 def dar_de_baja_docente(db: SessionDep, usuario_id: int, cue: str, director_id: int):
     rol_dir = get_one_rol(director_id, cue, db)
     if not rol_dir or rol_dir.estado != RolEstado.Activo or rol_dir.descripcion != RolDescripcion.Director:
-        raise HTTPException(status_code=403, detail="Solo un Director Activo puede dar de baja docentes")
+        raise HTTPException(status_code=403, detail="Solo un Director Activo puede dar de baja personal")
 
     rol_doc = get_one_rol(usuario_id, cue, db)
-    if not rol_doc or rol_doc.descripcion != RolDescripcion.Docente:
-        raise HTTPException(status_code=404, detail="Docente no encontrado en esta escuela")
+    if not rol_doc or rol_doc.descripcion not in ROLES_PERSONAL:
+        raise HTTPException(status_code=404, detail="Personal no encontrado en esta escuela")
 
     # inactivar asignaciones de cursos
     stmt = (
@@ -573,11 +575,11 @@ def dar_de_baja_docente(db: SessionDep, usuario_id: int, cue: str, director_id: 
 def reactivar_docente(db: SessionDep, usuario_id: int, cue: str, director_id: int):
     rol_dir = get_one_rol(director_id, cue, db)
     if not rol_dir or rol_dir.estado != RolEstado.Activo or rol_dir.descripcion != RolDescripcion.Director:
-        raise HTTPException(status_code=403, detail="Solo un Director Activo puede reactivar docentes")
+        raise HTTPException(status_code=403, detail="Solo un Director Activo puede reactivar personal")
 
     rol_doc = get_one_rol(usuario_id, cue, db)
-    if not rol_doc or rol_doc.descripcion != RolDescripcion.Docente:
-        raise HTTPException(status_code=404, detail="Docente no encontrado en esta escuela")
+    if not rol_doc or rol_doc.descripcion not in ROLES_PERSONAL:
+        raise HTTPException(status_code=404, detail="Personal no encontrado en esta escuela")
 
     rol_doc.estado = RolEstado.Activo
     rol_doc.fechaBaja = None
