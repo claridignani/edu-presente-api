@@ -1209,26 +1209,25 @@ def list_alertas_docente(
     docente_id: int,
     archivadas: bool = False,
 ) -> list[AlertaListItem]:
-    motivos_permitidos = [
-        MotivoAlerta.PEDAGOGICO,
-        MotivoAlerta.SALUD,
-        MotivoAlerta.CONDUCTA,
+    from app.models.curso_docente import CursoDocente
+    from datetime import date
+
+    hoy = date.today()
+
+    # Cursos activos del docente
+    cursos_docente = [
+        int(r) for r in db.exec(
+            select(CursoDocente.idCurso).where(
+                CursoDocente.idUsuario == docente_id,
+                CursoDocente.estado == "Activo",
+                (CursoDocente.fechaDesde.is_(None) | (CursoDocente.fechaDesde <= hoy)),
+                (CursoDocente.fechaHasta.is_(None) | (CursoDocente.fechaHasta >= hoy)),
+            )
+        ).all()
     ]
 
-    has_created_by = (
-        hasattr(Alerta, "created_by") and
-        "created_by" in Alerta.__table__.columns
-    )
-
-    conditions = [
-        Alerta.cue == cue,
-        Alerta.idAlumno == Alumno.idAlumno,
-        Alerta.idCurso == Curso.idCurso,
-        Alerta.motivo.in_(motivos_permitidos),
-    ]
-
-    if has_created_by:
-        conditions.append(Alerta.created_by == docente_id)
+    if not cursos_docente:
+        return []
 
     stmt = (
         select(
@@ -1241,14 +1240,17 @@ def list_alertas_docente(
             Curso.cicloLectivo,
         )
         .select_from(Alerta, Alumno, Curso)
-        .where(and_(*conditions))
+        .where(
+            and_(
+                Alerta.cue == cue,
+                Alerta.idAlumno == Alumno.idAlumno,
+                Alerta.idCurso == Curso.idCurso,
+                Alerta.idCurso.in_(cursos_docente),   # ← todos los cursos, no solo created_by
+                Alerta.archivada.is_(archivadas),
+            )
+        )
         .order_by(desc(Alerta.created_at), desc(Alerta.idAlerta))
     )
-
-    if not archivadas:
-        stmt = stmt.where(Alerta.archivada.is_(False))
-    else:
-        stmt = stmt.where(Alerta.archivada.is_(True))
 
     rows = db.exec(stmt).all()
 
