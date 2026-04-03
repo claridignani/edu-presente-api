@@ -64,6 +64,13 @@ class Alerta(SQLModel, table=True):
         nullable=True,
     )
 
+    asignado_a: Optional[int] = Field(
+        default=None,
+        foreign_key="usuario.idUsuario",
+        index=True,
+        nullable=True,
+    )
+
     motivo: MotivoAlerta = Field(
         sa_column=Column(
             SAEnum(

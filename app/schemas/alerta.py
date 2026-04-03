@@ -36,13 +36,14 @@ class AlertaListItem(SQLModel):
     estado: EstadoAlerta
     ultimaAccionAt: datetime | None = None
     archivada: bool = False
-
+    asignado_a: Optional[int] = None
 
 class AlertaPatch(SQLModel):
     estado: Optional[EstadoAlerta] = None
     archivada: Optional[bool] = None
     actor_id: Optional[int] = None
     detalle: Optional[str] = Field(default=None, max_length=500)
+    asignado_a: Optional[int] = None
 
 
 class AlertaCreate(SQLModel):
@@ -77,3 +78,9 @@ class AlertaResumenAlumno(SQLModel):
     resuelta: bool
     archivada: bool
 
+class AlertaStatsKpis(SQLModel):
+    activas: int
+    criticos: int
+    enSeguimiento: int
+    resueltas: int
+    sinActividad7dias: int
