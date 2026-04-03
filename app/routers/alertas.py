@@ -19,6 +19,7 @@ from sqlalchemy import and_ as sql_and
 from app.schemas.rol import RolDescripcion
 from app.schemas.alerta import AlertaListItem, AlertaPatch, AlertaCreate, AlertaResumenAlumno
 from app.schemas.intervencion import IntervencionCreate, IntervencionPublic
+from app.schemas.alerta import AlertaStatsKpis
 
 from app.services.alerta_service import (
     list_alertas,
@@ -29,6 +30,8 @@ from app.services.alerta_service import (
     create_alerta,
     stats_alertas_activas_por_escuela,
     get_historial_alertas_por_alumno,
+    get_stats_kpis,
+    list_alertas_asignadas
 )
 
 router = APIRouter(prefix="/alertas", tags=["Alertas"])
@@ -168,6 +171,29 @@ def post_alerta(
     a = create_alerta(db=session, payload=payload, actor_user_id=current_user.idUsuario)
     return {"ok": True, "idAlerta": a.idAlerta}
 
+# Endpoint KPIs
+@router.get("/stats/kpis", response_model=AlertaStatsKpis)
+def get_kpis_tablero(
+    session: SessionDep,
+    cue: str,
+    _current_user: Usuario = Depends(require_access_to_cue_param(ALLOWED_ALERTAS)),
+):
+    return get_stats_kpis(db=session, cue=cue)
+
+
+# Mis casos — alertas asignadas al asistente logueado
+@router.get("/mis-casos", response_model=list[AlertaListItem])
+def get_mis_casos(
+    session: SessionDep,
+    cue: str,
+    current_user: Usuario = Depends(require_access_to_cue_param(ALLOWED_ALERTAS)),
+):
+    return list_alertas_asignadas(
+        db=session,
+        cue=cue,
+        usuario_id=current_user.idUsuario,
+    )
+
 
 @router.patch("/{idAlerta}", response_model=dict)
 def update_alerta(
@@ -187,6 +213,7 @@ def get_intervenciones(
     current_user: Usuario = Depends(get_current_user),
 ):
     return list_intervenciones(db=session, idAlerta=idAlerta)
+
 
 
 @router.post("/{idAlerta}/intervenciones", response_model=IntervencionPublic)

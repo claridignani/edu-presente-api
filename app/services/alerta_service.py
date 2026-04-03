@@ -1,7 +1,7 @@
 # app/services/alerta_service.py
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from app.core.datetime_utils import now_arg
 from typing import Optional
 
@@ -928,6 +928,10 @@ def patch_alerta(
     for k, v in data.items():
         setattr(alerta, k, v)
 
+    if "estado" in data and actor_user_id:
+        if alerta.asignado_a is None:
+            alerta.asignado_a = actor_user_id
+
     db.add(alerta)
     db.commit()
     db.refresh(alerta)
@@ -1004,6 +1008,9 @@ def add_intervencion(
     alerta.ultimaAccionAt = now_arg()
     if alerta.estado == EstadoAlerta.PENDIENTE:
         alerta.estado = EstadoAlerta.EN_PROCESO
+        
+    if alerta.asignado_a is None and actor_id:
+        alerta.asignado_a = actor_id
 
     db.add(alerta)
     db.commit()
@@ -1477,3 +1484,109 @@ def resync_alertas_automaticas(
 
     db.commit()
     return {"actualizadas": actualizadas, "total_evaluadas": len(alertas)}
+
+def get_stats_kpis(db: SessionDep, cue: str) -> dict:
+    from datetime import timedelta
+
+    anio_actual = str(now_arg().year)
+
+    # Activas (no archivadas) del ciclo actual
+    stmt_activas = (
+        select(Alerta)
+        .join(Curso, Curso.idCurso == Alerta.idCurso)
+        .where(
+            Alerta.cue == cue,
+            Alerta.archivada.is_(False),
+            Curso.cicloLectivo == anio_actual,
+        )
+    )
+    activas_list = list(db.exec(stmt_activas).all())
+
+    # Resueltas del ciclo actual (incluyendo archivadas)
+    stmt_resueltas = (
+        select(Alerta)
+        .join(Curso, Curso.idCurso == Alerta.idCurso)
+        .where(
+            Alerta.cue == cue,
+            Alerta.estado == EstadoAlerta.RESUELTO,
+            Curso.cicloLectivo == anio_actual,
+        )
+    )
+    total_resueltas = len(list(db.exec(stmt_resueltas).all()))
+
+    hace7dias_naive = (now_arg() - timedelta(days=7)).replace(tzinfo=None)
+
+    return {
+        "activas":           sum(1 for a in activas_list if a.estado != EstadoAlerta.RESUELTO),
+        "criticos":          sum(1 for a in activas_list if a.estado == EstadoAlerta.CRITICO),
+        "enSeguimiento":     sum(1 for a in activas_list if a.estado == EstadoAlerta.EN_PROCESO),
+        "resueltas":         total_resueltas,
+        "sinActividad7dias": sum(
+            1 for a in activas_list
+            if a.estado != EstadoAlerta.RESUELTO
+            and _naive(a.ultimaAccionAt or a.created_at) < hace7dias_naive
+        ),
+    }
+
+
+def _naive(dt) -> datetime:
+    """Quita timezone si la tiene, para comparar con fechas naive de la BD."""
+    if dt is None:
+        return datetime.min
+    return dt.replace(tzinfo=None) if dt.tzinfo else dt
+
+def list_alertas_asignadas(
+    db: SessionDep,
+    cue: str,
+    usuario_id: int,
+) -> list[AlertaListItem]:
+    """Alertas asignadas a un asistente específico (Mis Casos)."""
+    stmt = (
+        select(
+            Alerta,
+            Alumno.nombre,
+            Alumno.apellido,
+            Alumno.dni,
+            Curso.nombre.label("cursoNombre"),
+            Curso.division,
+            Curso.cicloLectivo,
+        )
+        .select_from(Alerta, Alumno, Curso)
+        .where(
+            and_(
+                Alerta.cue == cue,
+                Alerta.idAlumno == Alumno.idAlumno,
+                Alerta.idCurso == Curso.idCurso,
+                Alerta.asignado_a == usuario_id,
+                Alerta.archivada.is_(False),
+            )
+        )
+        .order_by(desc(Alerta.ultimaAccionAt), desc(Alerta.created_at))
+    )
+
+    rows = db.exec(stmt).all()
+    out: list[AlertaListItem] = []
+    for alerta, nom, ape, dni, cursoNom, div, ciclo in rows:
+        curso_str = f"{cursoNom} {div} ({ciclo})".strip()
+        out.append(AlertaListItem(
+            idAlerta=int(alerta.idAlerta),
+            cue=alerta.cue,
+            idAlumno=int(alerta.idAlumno),
+            alumnoNombre=f"{ape}, {nom}",
+            alumnoDni=decrypt(dni) if dni else None,
+            idCurso=int(alerta.idCurso),
+            created_at=alerta.created_at,
+            curso=curso_str,
+            motivo=alerta.motivo,
+            consecutivas=int(alerta.consecutivas),
+            fechaInicioRacha=alerta.fechaInicioRacha,
+            fechaFinRacha=alerta.fechaFinRacha,
+            estado=alerta.estado,
+            ultimaAccionAt=alerta.ultimaAccionAt,
+            archivada=bool(alerta.archivada),
+            detalle=getattr(alerta, "detalle", None),
+            fechas=getattr(alerta, "fechas", None),
+            motivos_ausencia=getattr(alerta, "motivos_ausencia", None),
+            asignado_a=alerta.asignado_a,
+        ))
+    return out
