@@ -17,4 +17,5 @@ dependencies = [
     "pymysql>=1.1.0",
     "fastapi-mail>=1.6.2",
     "apscheduler>=3.11.2",
+    "resend>=2.7.0", 
 ]
