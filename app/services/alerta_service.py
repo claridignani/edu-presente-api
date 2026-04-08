@@ -22,6 +22,8 @@ from app.schemas.intervencion import IntervencionCreate, IntervencionPublic
 from app.models.usuario import Usuario
 from app.models.rol import Rol
 from app.core.encryption import decrypt, hash_for_search
+from app.models.responsable import Responsable
+from app.models.parentesco import Parentesco
 
 
 # -----------------------------
@@ -1535,12 +1537,16 @@ def _naive(dt) -> datetime:
         return datetime.min
     return dt.replace(tzinfo=None) if dt.tzinfo else dt
 
-def list_alertas_asignadas(
-    db: SessionDep,
-    cue: str,
-    usuario_id: int,
-) -> list[AlertaListItem]:
-    """Alertas asignadas a un asistente específico (Mis Casos)."""
+def list_alertas_asignadas(db, cue, usuario_id):
+    resp_sub = (
+        select(
+            Parentesco.idAlumno,
+            func.min(Parentesco.idResponsable).label("idResponsable"),
+        )
+        .group_by(Parentesco.idAlumno)
+        .subquery()
+    )
+
     stmt = (
         select(
             Alerta,
@@ -1550,13 +1556,19 @@ def list_alertas_asignadas(
             Curso.nombre.label("cursoNombre"),
             Curso.division,
             Curso.cicloLectivo,
+            Responsable.idResponsable,
+            Responsable.nombre.label("respNombre"),
+            Responsable.apellido.label("respApellido"),
+            Responsable.nro_celular,
         )
-        .select_from(Alerta, Alumno, Curso)
+        .select_from(Alerta)
+        .join(Alumno, Alumno.idAlumno == Alerta.idAlumno)
+        .join(Curso, Curso.idCurso == Alerta.idCurso)
+        .outerjoin(resp_sub, resp_sub.c.idAlumno == Alerta.idAlumno)
+        .outerjoin(Responsable, Responsable.idResponsable == resp_sub.c.idResponsable)
         .where(
             and_(
                 Alerta.cue == cue,
-                Alerta.idAlumno == Alumno.idAlumno,
-                Alerta.idCurso == Curso.idCurso,
                 Alerta.asignado_a == usuario_id,
                 Alerta.archivada.is_(False),
             )
@@ -1565,9 +1577,20 @@ def list_alertas_asignadas(
     )
 
     rows = db.exec(stmt).all()
-    out: list[AlertaListItem] = []
-    for alerta, nom, ape, dni, cursoNom, div, ciclo in rows:
+    out = []
+    for alerta, nom, ape, dni, cursoNom, div, ciclo, respId, respNom, respApe, celular in rows:
+        print(f"DEBUG responsable: id={respId} nom={respNom} ape={respApe} celular={celular}")
+
         curso_str = f"{cursoNom} {div} ({ciclo})".strip()
+
+        responsable = None
+        if respId:
+            responsable = {
+                "idResponsable": respId,
+                "nombre": f"{respApe}, {respNom}".strip(", "),
+                "nro_celular": celular,
+            }
+
         out.append(AlertaListItem(
             idAlerta=int(alerta.idAlerta),
             cue=alerta.cue,
@@ -1588,5 +1611,6 @@ def list_alertas_asignadas(
             fechas=getattr(alerta, "fechas", None),
             motivos_ausencia=getattr(alerta, "motivos_ausencia", None),
             asignado_a=alerta.asignado_a,
+            responsable=responsable,
         ))
     return out

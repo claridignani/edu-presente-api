@@ -7,6 +7,7 @@ from typing import Optional
 from sqlmodel import SQLModel, Field
 
 from app.models.alerta import EstadoAlerta, MotivoAlerta
+from app.models.responsable import Responsable
 
 class AlertaListItem(SQLModel):
     idAlerta: int
@@ -37,6 +38,7 @@ class AlertaListItem(SQLModel):
     ultimaAccionAt: datetime | None = None
     archivada: bool = False
     asignado_a: Optional[int] = None
+    responsable: Optional[dict] = None
 
 class AlertaPatch(SQLModel):
     estado: Optional[EstadoAlerta] = None
