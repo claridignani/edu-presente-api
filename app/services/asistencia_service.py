@@ -793,13 +793,25 @@ def stats_justificadas_vs_injustificadas(
 ) -> dict:
     where = _base_where(cue, desde, hasta, curso_ids)
 
-    # Justificadas: Ausente con certificado aprobado O con justificado_hasta seteado
+    # Total ausencias por Enfermedad
+    stmt_total = (
+        select(func.count())
+        .select_from(Asistencia, Curso)
+        .where(and_(
+            *where,
+            Asistencia.estado == "Ausente",
+            Asistencia.motivo_ausencia == "Enfermedad",
+        ))
+    )
+
+    # Justificadas = Enfermedad + (certificado aprobado OR justificado_hasta seteado)
     stmt_just = (
         select(func.count())
         .select_from(Asistencia, Curso)
         .where(and_(
             *where,
             Asistencia.estado == "Ausente",
+            Asistencia.motivo_ausencia == "Enfermedad",
             or_(
                 Asistencia.certificado_estado == "aprobado",
                 Asistencia.justificado_hasta != None,
@@ -807,29 +819,16 @@ def stats_justificadas_vs_injustificadas(
         ))
     )
 
-    # Injustificadas por Enfermedad: Ausente + motivo Enfermedad + sin justificación
-    stmt_inj = (
-        select(func.count())
-        .select_from(Asistencia, Curso)
-        .where(and_(
-            *where,
-            Asistencia.estado == "Ausente",
-            Asistencia.motivo_ausencia == "Enfermedad",
-            Asistencia.certificado_estado != "aprobado",
-            Asistencia.justificado_hasta == None,
-        ))
-    )
-
-    justificadas   = int(db.exec(stmt_just).one() or 0)
-    injustificadas = int(db.exec(stmt_inj).one() or 0)
-    total = justificadas + injustificadas
+    total_enf    = int(db.exec(stmt_total).one() or 0)
+    justificadas = int(db.exec(stmt_just).one() or 0)
+    injustificadas = total_enf - justificadas
 
     return {
         "justificadas":      justificadas,
         "injustificadas":    injustificadas,
-        "total":             total,
-        "justificadasPct":   round((justificadas   / total) * 100, 1) if total else 0.0,
-        "injustificadasPct": round((injustificadas / total) * 100, 1) if total else 0.0,
+        "total":             total_enf,
+        "justificadasPct":   round((justificadas   / total_enf) * 100, 1) if total_enf else 0.0,
+        "injustificadasPct": round((injustificadas / total_enf) * 100, 1) if total_enf else 0.0,
     }
 
 def stats_distribucion_inasistencias(

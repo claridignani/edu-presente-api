@@ -22,6 +22,8 @@ from app.schemas.intervencion import IntervencionCreate, IntervencionPublic
 from app.models.usuario import Usuario
 from app.models.rol import Rol
 from app.core.encryption import decrypt, hash_for_search
+from app.models.responsable import Responsable
+from app.models.parentesco import Parentesco
 
 
 # -----------------------------
