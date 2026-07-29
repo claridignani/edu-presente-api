@@ -102,8 +102,6 @@ def search_responsables(db: SessionDep, q: str, limit: int = 10) -> list[Respons
 # ==============================================================
 
 def add_responsable(db: SessionDep, responsable_in: ResponsableCreate):
-    # dni, fecha_nacimiento y direccion ya llegan encriptados desde ResponsableCreate
-    # Para validaciones y búsquedas necesitamos el valor plain
     dni_encriptado = responsable_in.dni or ""
     if not dni_encriptado:
         raise HTTPException(status_code=400, detail="El DNI es obligatorio")
@@ -112,36 +110,30 @@ def add_responsable(db: SessionDep, responsable_in: ResponsableCreate):
 
     nombre = _clean_str(responsable_in.nombre) or ""
     apellido = _clean_str(responsable_in.apellido) or ""
-    email = _clean_email(responsable_in.email) or ""
+    email = _clean_email(responsable_in.email)
     nro = _clean_str(responsable_in.nro_celular) or ""
     direccion_encriptada = responsable_in.direccion or ""
 
-    # Validaciones obligatorias
     if not dni_plain:
         raise HTTPException(status_code=400, detail="El DNI es obligatorio")
     if not nombre:
         raise HTTPException(status_code=400, detail="El nombre es obligatorio")
     if not apellido:
         raise HTTPException(status_code=400, detail="El apellido es obligatorio")
-    if not email:
-        raise HTTPException(status_code=400, detail="El email es obligatorio")
     if not nro:
         raise HTTPException(status_code=400, detail="El nro_celular es obligatorio")
     if not direccion_encriptada:
         raise HTTPException(status_code=400, detail="La dirección es obligatoria")
 
-    # Reutilizar por DNI si ya existe
     existente = get_responsable_by_dni(db=db, dni=dni_plain)
     if existente:
         return existente
 
-    # Crear nuevo — los campos encriptados ya vienen bien desde el schema
     data = responsable_in.model_dump()
     data["nombre"] = nombre
     data["apellido"] = apellido
     data["email"] = email
     data["nro_celular"] = nro
-    # Aseguramos que el dni_hash esté seteado
     data["dni_hash"] = hash_for_search(dni_plain)
 
     db_resp = Responsable.model_validate(data)
@@ -149,7 +141,6 @@ def add_responsable(db: SessionDep, responsable_in: ResponsableCreate):
     db.commit()
     db.refresh(db_resp)
     return db_resp
-
 
 # ==============================================================
 # UPDATE
@@ -160,7 +151,6 @@ def update_responsable(db: SessionDep, responsable_existente: Responsable, respo
 
     if "email" in data:
         data["email"] = _clean_email(data["email"])
-        _require_not_empty(data["email"], "email")
 
     if "nro_celular" in data:
         data["nro_celular"] = _clean_str(data["nro_celular"])
@@ -174,12 +164,10 @@ def update_responsable(db: SessionDep, responsable_existente: Responsable, respo
         data["apellido"] = _clean_str(data["apellido"])
         _require_not_empty(data["apellido"], "apellido")
 
-    # dni y direccion llegan encriptados desde ResponsableUpdate (field_validator)
     if "dni" in data and data["dni"]:
         dni_plain = decrypt(data["dni"])
         _require_not_empty(dni_plain, "dni")
 
-        # Verificar unicidad usando hash
         dni_hash = hash_for_search(dni_plain)
         rid = int(responsable_existente.idResponsable)
         stmt = select(Responsable).where(
@@ -189,11 +177,9 @@ def update_responsable(db: SessionDep, responsable_existente: Responsable, respo
         if db.exec(stmt).first():
             raise HTTPException(status_code=400, detail="Ya existe otro responsable con ese DNI")
 
-        # Actualizar el hash también
         data["dni_hash"] = dni_hash
 
     if "direccion" in data and data["direccion"]:
-        # ya viene encriptada, solo validamos que no sea vacía desencriptando
         direccion_plain = decrypt(data["direccion"])
         _require_not_empty(direccion_plain, "direccion")
 
@@ -202,7 +188,6 @@ def update_responsable(db: SessionDep, responsable_existente: Responsable, respo
     db.commit()
     db.refresh(responsable_existente)
     return responsable_existente
-
 
 # ==============================================================
 # DELETE
