@@ -85,7 +85,6 @@ def get_responsables_by_alumno(db: SessionDep, idAlumno: int) -> list[Responsabl
             nombre=r.nombre,
             apellido=r.apellido,
             dni=decrypt(r.dni) if r.dni else r.dni,
-            fecha_nacimiento=_parse_fecha(r.fecha_nacimiento),
             email=r.email,
             nro_celular=r.nro_celular,
             direccion=decrypt(r.direccion) if r.direccion else r.direccion,

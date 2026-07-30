@@ -23,7 +23,6 @@ class ResponsableConParentescoPublic(SQLModel):
     nombre: str
     apellido: str
     dni: str
-    fecha_nacimiento: Optional[date] = None  
     email: str
     nro_celular: str
     direccion: str

@@ -13,7 +13,7 @@ from app.services.responsable_service import (
     get_one_responsable,
     get_responsable_by_dni,
     update_responsable,
-    search_responsables,   # ✅ NUEVO
+    search_responsables,   
 )
 
 router = APIRouter(prefix="/responsables", tags=["Responsables"])
@@ -30,7 +30,6 @@ def create_responsable(payload: ResponsableCreate, session: SessionDep):
 
 # =========================
 # SEARCH (Nombre / Apellido / DNI)
-# ⚠️ Debe ir ANTES de /{idResponsable}
 # =========================
 
 @router.get("/buscar", response_model=list[ResponsablePublic])

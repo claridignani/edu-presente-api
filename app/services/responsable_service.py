@@ -33,7 +33,6 @@ def _decrypt_responsable(resp: Responsable) -> dict:
         "nombre": resp.nombre,
         "apellido": resp.apellido,
         "dni": decrypt(resp.dni) if resp.dni else resp.dni,
-        "fecha_nacimiento": decrypt(resp.fecha_nacimiento) if resp.fecha_nacimiento else None,
         "email": resp.email,
         "nro_celular": resp.nro_celular,
         "direccion": decrypt(resp.direccion) if resp.direccion else resp.direccion,

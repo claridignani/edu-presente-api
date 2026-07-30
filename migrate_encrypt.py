@@ -100,10 +100,6 @@ def migrar_responsables(session: Session):
             responsable.dni = encrypt(responsable.dni)
             cambio = True
 
-        if responsable.fecha_nacimiento and not ya_encriptado(str(responsable.fecha_nacimiento)):
-            responsable.fecha_nacimiento = encrypt(str(responsable.fecha_nacimiento))
-            cambio = True
-
         if responsable.direccion and not ya_encriptado(responsable.direccion):
             responsable.direccion = encrypt(responsable.direccion)
             cambio = True

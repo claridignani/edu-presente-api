@@ -5,8 +5,8 @@ from app.models.password_reset_token import PasswordResetToken  # noqa
 
 engine = create_engine(
     DATABASE_URL,
-    pool_pre_ping=True,   # ✅ evita "MySQL server has gone away" en la 1ra request
-    pool_recycle=300,     # ✅ recicla conexiones viejas (Railway/proxy corta idle)
+    pool_pre_ping=True,   
+    pool_recycle=300,     
     pool_size=5,
     max_overflow=10,
 )
