@@ -30,7 +30,6 @@ def create_responsable(payload: ResponsableCreate, session: SessionDep):
 
 # =========================
 # SEARCH (Nombre / Apellido / DNI)
-# ⚠️ Debe ir ANTES de /{idResponsable}
 # =========================
 
 @router.get("/buscar", response_model=list[ResponsablePublic])

@@ -8,7 +8,6 @@ class ResponsableBase(SQLModel):
     apellido: str = Field(max_length=100)
     dni: str = Field(index=True, max_length=255)
     dni_hash: Optional[str] = Field(default=None, index=True)
-    fecha_nacimiento: Optional[str] = Field(default=None)
     email: Optional[str] = Field(default=None, index=True, max_length=255)
     nro_celular: str = Field(max_length=15)
     direccion: str = Field(max_length=255)
@@ -20,7 +19,6 @@ class ResponsablePublic(SQLModel):
     nombre: str
     apellido: str
     dni: str
-    fecha_nacimiento: Optional[str] = None
     email: Optional[str] = None
     nro_celular: str
     direccion: str
@@ -31,8 +29,6 @@ class ResponsablePublic(SQLModel):
     def decrypt_fields(self):
         if self.dni:
             self.dni = decrypt(self.dni)
-        if self.fecha_nacimiento:
-            self.fecha_nacimiento = decrypt(self.fecha_nacimiento)
         if self.direccion:
             self.direccion = decrypt(self.direccion)
         return self
@@ -41,11 +37,6 @@ class ResponsableCreate(ResponsableBase):
     @field_validator("dni", mode="before")
     @classmethod
     def encrypt_dni(cls, v):
-        return encrypt(str(v)) if v else v
-
-    @field_validator("fecha_nacimiento", mode="before")
-    @classmethod
-    def encrypt_fecha(cls, v):
         return encrypt(str(v)) if v else v
 
     @field_validator("direccion", mode="before")
@@ -65,7 +56,6 @@ class ResponsableUpdate(SQLModel):
     apellido: str | None = None
     dni: str | None = None
     dni_hash: str | None = None
-    fecha_nacimiento: str | None = None
     email: str | None = None
     nro_celular: str | None = None
     direccion: str | None = None
@@ -77,10 +67,6 @@ class ResponsableUpdate(SQLModel):
     def encrypt_dni(cls, v):
         return encrypt(str(v)) if v else v
 
-    @field_validator("fecha_nacimiento", mode="before")
-    @classmethod
-    def encrypt_fecha(cls, v):
-        return encrypt(str(v)) if v else v
 
     @field_validator("direccion", mode="before")
     @classmethod

@@ -10,7 +10,6 @@ class Responsable(ResponsableBase, table=True):
     idResponsable: int | None = Field(default=None, primary_key=True)
     dni: str = Field(index=True, unique=True, max_length=255)
     dni_hash: str = Field(default="", index=True, max_length=64)
-    fecha_nacimiento: Optional[str] = Field(default=None)
     email: Optional[str] = Field(default=None, index=True, max_length=255)
     nro_celular: str = Field(index=True, max_length=15)
     direccion: str = Field(max_length=255)
