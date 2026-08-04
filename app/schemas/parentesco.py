@@ -22,8 +22,8 @@ class ResponsableConParentescoPublic(SQLModel):
     idResponsable: int
     nombre: str
     apellido: str
-    dni: str
-    email: str
-    nro_celular: str
-    direccion: str
+    dni: Optional[str] = None
+    email: Optional[str] = None
+    nro_celular: Optional[str] = None
+    direccion: Optional[str] = None
     parentesco: str
