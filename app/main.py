@@ -51,24 +51,30 @@ app = FastAPI(
     redoc_url=None if _is_prod else "/redoc",
 )
 
-origins = [
-    "http://localhost:4200",
-    "http://localhost:8100",
-    "http://127.0.0.1:4200",
-    "http://192.168.100.14:4200", 
+import re
+
+origins_prod = [
     "https://edupresente.vercel.app",
-    "http://192.168.100.37:4200",
-    "https://edupresente.com.ar",      
-    "https://www.edupresente.com.ar", 
+    "https://edupresente.com.ar",
+    "https://www.edupresente.com.ar",
 ]
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+if _is_prod:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins_prod,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=r"http://(localhost|127\.0\.0\.1|192\.168\.\d{1,3}\.\d{1,3}|10\.0\.2\.2):(4200|8100)",
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 @app.on_event("startup")
 def on_startup():
