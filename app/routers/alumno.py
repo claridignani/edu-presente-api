@@ -8,7 +8,7 @@ from typing import Annotated, Optional
 from fastapi import APIRouter, HTTPException, Query, Depends
 from datetime import date
 
-from app.dependencies import SessionDep
+from app.dependencies import SessionDep, session
 from app.dependencies.auth import get_current_user
 from app.dependencies.authz import require_access_to_cue_param  # ← import faltante
 from app.models.usuario import Usuario
@@ -249,11 +249,8 @@ def alta_masiva_alumnos_en_curso(
 
     for i, item in enumerate(payload.items):
         try:
-            alumno_data = item.alumno.model_dump()
-            alumno_data["idCurso"] = idCurso
-
-            alumno_in = AlumnoCreate(**alumno_data)
-            db_alumno = add_alumno(db=session, alumno_in=alumno_in, current_user=current_user)
+            alumno_in = item.alumno.model_copy(update={"idCurso": idCurso})
+            db_alumno = add_alumno(db=session, alumno_in=alumno_in, current_user=current_user)   # ← esta
 
             resp_dni = (item.responsable.dni or "").strip()
             if not resp_dni:
