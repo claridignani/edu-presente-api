@@ -35,4 +35,3 @@ class ResponsableConParentescoPublic(SQLModel):
     nro_celular: Optional[str] = None
     direccion: Optional[str] = None
     parentesco: str
-

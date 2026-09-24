@@ -67,7 +67,6 @@ class ResponsableUpdate(SQLModel):
     def encrypt_dni(cls, v):
         return encrypt(str(v)) if v else v
 
-
     @field_validator("direccion", mode="before")
     @classmethod
     def encrypt_direccion(cls, v):
